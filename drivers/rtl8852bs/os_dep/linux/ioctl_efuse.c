@@ -125,18 +125,30 @@ static u8 rtw_efuse_fake2map(_adapter *padapter, u8 efuse_type)
 	return res;
 }
 
-static u8 rtw_efuse_read_map2shadow(_adapter *padapter, u8 efuse_type)
+u8 rtw_efuse_read_map2shadow(_adapter *padapter, u8 efuse_type)
 {
 	struct rtw_efuse_phl_arg *efuse_arg = NULL;
+	struct dvobj_priv *dvobj = adapter_to_dvobj(padapter);
 	u8 res = _SUCCESS;
 
 	efuse_arg = _rtw_malloc(sizeof(struct rtw_efuse_phl_arg));
 	if (efuse_arg) {
 		_rtw_memset((void *)efuse_arg, 0, sizeof(struct rtw_efuse_phl_arg));
-		if (efuse_type == RTW_EFUSE_WIFI)
-		    rtw_efuse_cmd(padapter, efuse_arg, RTW_EFUSE_CMD_WIFI_UPDATE_MAP);
-		else if (efuse_type == RTW_EFUSE_BT)
+		if (efuse_type == RTW_EFUSE_WIFI) {
+#ifdef RTW_DIRECT_HAL_API
+			efuse_arg->status = rtw_phl_efuse_shadow_load(dvobj->phl, true);
+			efuse_arg->cmd_ok = _TRUE;
+#else
+			rtw_efuse_cmd(padapter, efuse_arg, RTW_EFUSE_CMD_WIFI_UPDATE_MAP);
+#endif
+		} else if (efuse_type == RTW_EFUSE_BT) {
+#ifdef RTW_DIRECT_HAL_API
+			efuse_arg->status = rtw_phl_efuse_bt_shadow_load(dvobj->phl);
+			efuse_arg->cmd_ok = _TRUE;
+#else
 			rtw_efuse_cmd(padapter, efuse_arg, RTW_EFUSE_CMD_BT_UPDATE_MAP);
+#endif
+		}
 		if (efuse_arg->cmd_ok && efuse_arg->status == RTW_PHL_STATUS_SUCCESS)
 				res = _SUCCESS;
 		else
@@ -151,21 +163,34 @@ static u8 rtw_efuse_read_map2shadow(_adapter *padapter, u8 efuse_type)
 static u8 rtw_efuse_get_shadow_map(_adapter *padapter, u8 *map, u16 size, u8 efuse_type)
 {
 	struct rtw_efuse_phl_arg *efuse_arg = NULL;
+	struct dvobj_priv *dvobj = adapter_to_dvobj(padapter);
 	u8 res = _FAIL;
 
 	efuse_arg = _rtw_malloc(sizeof(struct rtw_efuse_phl_arg));
 	if (efuse_arg) {
 
 		efuse_arg->buf_len = size;
-		if (efuse_type == RTW_EFUSE_WIFI)
-		    rtw_efuse_cmd(padapter, efuse_arg, RTW_EFUSE_CMD_SHADOW_MAP2BUF);
-		else if (efuse_type == RTW_EFUSE_BT)
+		if (efuse_type == RTW_EFUSE_WIFI) {
+#ifdef RTW_DIRECT_HAL_API
+			efuse_arg->status = rtw_phl_efuse_shadow2buf(dvobj->phl, efuse_arg->poutbuf, size, true);
+			efuse_arg->cmd_ok = _TRUE;
+#else
+			rtw_efuse_cmd(padapter, efuse_arg, RTW_EFUSE_CMD_SHADOW_MAP2BUF);
+#endif
+		} else if (efuse_type == RTW_EFUSE_BT) {
+#ifdef RTW_DIRECT_HAL_API
+			efuse_arg->status = rtw_phl_efuse_bt_shadow2buf(dvobj->phl, efuse_arg->poutbuf, size);
+			efuse_arg->cmd_ok = _TRUE;
+#else
 			rtw_efuse_cmd(padapter, efuse_arg, RTW_EFUSE_CMD_BT_SHADOW_MAP2BUF);
+#endif
+		}
 		if (efuse_arg->cmd_ok && efuse_arg->status == RTW_PHL_STATUS_SUCCESS) {
-				_rtw_memcpy((void *)map, efuse_arg->poutbuf, size);
-				res = _SUCCESS;
+			_rtw_memcpy((void *)map, efuse_arg->poutbuf, size);
+			res = _SUCCESS;
 		} else
-				res = _FAIL;
+			res = _FAIL;
+
 	}
 	if (efuse_arg)
 		_rtw_mfree(efuse_arg, sizeof(struct rtw_efuse_phl_arg));
@@ -216,12 +241,12 @@ static bool rtw_file_efuse_ismasked(_adapter *padapter, u16 offset, u8 *maskbuf)
 }
 
 static u8 rtw_efuse_compare_data(_adapter *padapter,
-				u8 addr, u32 len, u8 *dst, u8 *src, u8 efuse_type)
+				u16 addr, u32 len, u8 *dst, u8 *src, u8 efuse_type)
 {
 	struct rtw_efuse_phl_arg *efuse_arg = NULL;
 	enum rtw_efuse_phl_cmdid cmdid = RTW_EFUSE_CMD_WIFI_GET_MASK_BUF;
 	u8 res = _FAIL;
-	u16 idx = addr;
+	u16 idx = 0;
 
 	efuse_arg = _rtw_malloc(sizeof(struct rtw_efuse_phl_arg));
 
@@ -243,15 +268,17 @@ static u8 rtw_efuse_compare_data(_adapter *padapter,
 			RTW_MAP_DUMP_SEL(RTW_DBGDUMP, "efuse mask buf:",
 				efuse_arg->poutbuf, efuse_arg->buf_len);
 
-			for (; idx <= len; idx++) {
-				if (!rtw_file_efuse_ismasked(padapter, idx, efuse_arg->poutbuf)) {
-					if (_rtw_memcmp((void *)dst+idx , (void *)src+idx, 1)) {
-						RTW_INFO("mask cmp success addr: 0x%x dst: %02x <=> src:%02x\n",
-										idx, dst[idx], src[idx]);
+			for (idx = 0; idx + addr < (addr + len); idx++) {
+					u16 chkaddr = idx + addr;
+
+				if (!rtw_file_efuse_ismasked(padapter, chkaddr, efuse_arg->poutbuf)) {
+					if (_rtw_memcmp((void *)dst + chkaddr , (void *)src + idx, 1)) {
+						RTW_INFO("mask cmp success addr: 0x%x cur dst: %02x <=> PG src:%02x\n",
+										idx, dst[chkaddr], src[idx]);
 						res = _SUCCESS;
 					} else {
-						RTW_INFO("mask cmp Fail addr: 0x%x dst: %02x <=> src:%02x\n",
-										idx, dst[idx], src[idx]);
+						RTW_INFO("mask cmp Fail addr: 0x%x cur dst: %02x <=> PG src:%02x\n",
+										chkaddr, dst[chkaddr], src[idx]);
 						res  = _FAIL;
 						break;
 					}
@@ -270,16 +297,22 @@ static u8 rtw_efuse_compare_data(_adapter *padapter,
 
 u8 rtw_efuse_map_read(_adapter * adapter, u16 addr, u16 cnts, u8 *data, u8 efuse_type)
 {
-	struct dvobj_priv *d;
+	struct dvobj_priv *dvobj = adapter_to_dvobj(adapter);
 	u8 *efuse = NULL;
-	u16 size, i;
-	int err = _FAIL;
+	u32 size, i;
+	int err = _SUCCESS;
 	u8 status = _SUCCESS;
-
+#ifdef RTW_DIRECT_HAL_API
+	if (efuse_type == RTW_EFUSE_WIFI)
+		rtw_phl_efuse_get_logical_size(dvobj->phl, &size) == RTW_PHL_STATUS_SUCCESS ? _SUCCESS : _FAIL;
+	else if (efuse_type == RTW_EFUSE_BT)
+		rtw_phl_efuse_get_bt_logical_size(dvobj->phl, &size) == RTW_PHL_STATUS_SUCCESS ? _SUCCESS : _FAIL;
+#else
 	if (efuse_type == RTW_EFUSE_WIFI)
 		err = rtw_efuse_get_map_size(adapter, &size, RTW_EFUSE_CMD_WIFI_GET_LOG_SIZE);
 	else if (efuse_type == RTW_EFUSE_BT)
 		err = rtw_efuse_get_map_size(adapter, &size, RTW_EFUSE_CMD_BT_GET_LOG_SIZE);
+#endif
 
 	if (err == _FAIL) {
 		status = _FAIL;
@@ -300,7 +333,8 @@ u8 rtw_efuse_map_read(_adapter * adapter, u16 addr, u16 cnts, u8 *data, u8 efuse
 	efuse = rtw_zmalloc(size);
 	if (efuse) {
 		if (rtw_efuse_read_map2shadow(adapter, efuse_type) == _SUCCESS) {
-			err = rtw_efuse_get_shadow_map(adapter, efuse, size, efuse_type);
+			err = rtw_efuse_get_shadow_map(adapter, efuse, (u16)size, efuse_type);
+
 			if (err == _FAIL) {
 				rtw_mfree(efuse, size);
 				status = _FAIL;
@@ -448,6 +482,8 @@ static u8 rtw_efuse_mask_file_load(_adapter *padapter, u8 *filepath, u8 efuse_ty
 	if (filepath) {
 		RTW_INFO("efuse file path %s len %zu", filepath, strlen(filepath));
 		efuse_arg = _rtw_malloc(sizeof(struct rtw_efuse_phl_arg));
+		efuse_arg->status == RTW_PHL_STATUS_FAILURE;
+
 		if (efuse_arg) {
 			_rtw_memset((void *)efuse_arg, 0, sizeof(struct rtw_efuse_phl_arg));
 			_rtw_memcpy(efuse_arg->pfile_path, filepath, strlen(filepath));
@@ -547,9 +583,11 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 		u32 shift, cnt;
 		u32 blksz = 0x200; /* The size of one time show, default 512 */
 		u8 *efuse_data = NULL;
-
+#ifdef RTW_DIRECT_HAL_API
+		rtw_phl_efuse_get_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
 		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_WIFI_GET_LOG_SIZE);
-
+#endif
  		if (pre_efuse_map) {
 			if (rtw_efuse_map_read(padapter, 0, mapLen, pre_efuse_map, RTW_EFUSE_WIFI) == _FAIL) {
 				RTW_INFO("%s: read realmap Fail!!\n", __FUNCTION__);
@@ -603,9 +641,11 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 			goto exit;
 		}
 		RTW_INFO("%s: cnts=%d\n", __FUNCTION__, cnts);
-
+#ifdef RTW_DIRECT_HAL_API
+		rtw_phl_efuse_get_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
 		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_WIFI_GET_LOG_SIZE);
-
+#endif
 		if ((addr + cnts) > mapLen) {
 			RTW_INFO("%s: addr(0x%X)+cnts(%d) over mapLen %d parameter error!\n", __FUNCTION__, addr, cnts, mapLen);
 			err = -EINVAL;
@@ -630,9 +670,11 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 		u32 shift, cnt;
 		u32 blksz = 0x200; /* The size of one time show, default 512 */
 		u8 *efuse_data = NULL;
-
-		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_WIFI_GET_LOG_SIZE);
-
+#ifdef RTW_DIRECT_HAL_API
+				rtw_phl_efuse_get_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
+				rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_WIFI_GET_LOG_SIZE);
+#endif
  		if (pre_efuse_map) {
 			if (rtw_efuse_get_shadow_map(padapter, pre_efuse_map, mapLen, RTW_EFUSE_WIFI) == _FAIL) {
 				RTW_INFO("%s: read wifi fake map Fail!!\n", __FUNCTION__);
@@ -686,9 +728,11 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 			goto exit;
 		}
 		RTW_INFO("%s: cnts=%d\n", __FUNCTION__, cnts);
-
+#ifdef RTW_DIRECT_HAL_API
+		rtw_phl_efuse_get_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
 		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_WIFI_GET_LOG_SIZE);
-
+#endif
 		if ((addr + cnts) > mapLen) {
 			RTW_INFO("%s: addr(0x%X)+cnts(%d) over mapLen %d parameter error!\n", __FUNCTION__, addr, cnts, mapLen);
 			err = -EINVAL;
@@ -712,10 +756,12 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 		u32 shift, cnt;
 		u32 blksz = 0x200; /* The size of one time show, default 512 */
 		u8 *efuse_data = NULL;
-
+#ifdef RTW_DIRECT_HAL_API
+		rtw_phl_efuse_get_bt_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
 		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_BT_GET_LOG_SIZE);
-
- 		if (pre_efuse_map) {
+#endif
+		if (pre_efuse_map) {
 			if (rtw_efuse_map_read(padapter, 0, mapLen, pre_efuse_map, RTW_EFUSE_BT) == _FAIL) {
 				RTW_INFO("%s: read BT realmap Fail!!\n", __FUNCTION__);
 				err = -EFAULT;
@@ -768,9 +814,11 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 			goto exit;
 		}
 		RTW_INFO("%s: cnts=%d\n", __FUNCTION__, cnts);
-
+#ifdef RTW_DIRECT_HAL_API
+		rtw_phl_efuse_get_bt_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
 		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_BT_GET_LOG_SIZE);
-
+#endif
 		if ((addr + cnts) > mapLen) {
 			RTW_INFO("%s: addr(0x%X)+cnts(%d) over mapLen %d parameter error!\n", __FUNCTION__, addr, cnts, mapLen);
 			err = -EINVAL;
@@ -794,10 +842,12 @@ int rtw_ioctl_efuse_get(struct net_device *dev,
 		u32 shift, cnt;
 		u32 blksz = 0x200; /* The size of one time show, default 512 */
 		u8 *efuse_data = NULL;
-
+#ifdef RTW_DIRECT_HAL_API
+		rtw_phl_efuse_get_bt_logical_size(dvobj->phl, (u32*)&mapLen);
+#else
 		rtw_efuse_get_map_size(padapter, &mapLen, RTW_EFUSE_CMD_BT_GET_LOG_SIZE);
-
- 		if (pre_efuse_map) {
+#endif
+		if (pre_efuse_map) {
 			if (rtw_efuse_get_shadow_map(padapter, pre_efuse_map, mapLen, RTW_EFUSE_BT) == _FAIL) {
 				RTW_INFO("%s: read BT fake map Fail!!\n", __FUNCTION__);
 				err = -EFAULT;
@@ -949,8 +999,6 @@ int rtw_ioctl_efuse_set(struct net_device *dev,
 	_adapter *padapter = (_adapter *)rtw_netdev_priv(dev);
 	struct dvobj_priv *dvobj = adapter_to_dvobj(padapter);
 
-	u8 ips_mode = IPS_NUM; /* init invalid value */
-	u8 lps_mode = PM_PS_MODE_NUM; /* init invalid value */
 	u32 i = 0, j = 0, jj = 0, kk = 0;
 	u8 *setdata = NULL;
 	u8 *shadowmap = NULL;
@@ -977,16 +1025,6 @@ int rtw_ioctl_efuse_set(struct net_device *dev,
 		err = -ENOMEM;
 		goto exit;
 	}
-
-#ifdef CONFIG_LPS
-	lps_mode = pwrctrlpriv->power_mgnt;/* keep org value */
-	rtw_pm_set_lps(padapter, PM_PS_MODE_ACTIVE);
-#endif
-
-#ifdef CONFIG_IPS
-	ips_mode = pwrctrlpriv->ips_mode;/* keep org value */
-	rtw_pm_set_ips(padapter, IPS_NONE);
-#endif
 
 	pch = extra;
 	RTW_INFO("%s: in=%s\n", __FUNCTION__, extra);
@@ -1334,16 +1372,6 @@ exit:
 
 	wrqu->length = strlen(extra);
 
-	if (padapter->registrypriv.mp_mode == 0) {
-#ifdef CONFIG_IPS
-		rtw_pm_set_ips(padapter, ips_mode);
-#endif /* CONFIG_IPS */
-
-#ifdef CONFIG_LPS
-		rtw_pm_set_lps(padapter, lps_mode);
-#endif /* CONFIG_LPS */
-	}
-
 	return err;
 }
 
@@ -1436,7 +1464,9 @@ int rtw_ioctl_efuse_bt_file_map_load(struct net_device *dev,
 			sprintf(extra, "BT efuse Map file file_read FAIL\n");
 		}
 	} else {
-		sprintf(extra, "BT efuse file readable FAIL\n");
+		sprintf(extra, "BT efuse file readable FAIL\n"
+				"indicate the file path and directory to CMD next space,\n"
+				"CMD format:rtwpriv wlan0 bt_efuse_file /xx/xx/xx/efuse.map\n");
 		RTW_INFO("%s BT rtw_is_file_readable fail!\n", __func__);
 	}
 
@@ -1468,7 +1498,9 @@ int rtw_ioctl_efuse_bt_file_mask_load(struct net_device *dev,
 			sprintf(extra, "BT efuse Mask file file_read FAIL\n");
 		}
 	} else {
-		sprintf(extra, "BT efuse file readable FAIL\n");
+		sprintf(extra, "BT efuse file readable FAIL\n"
+			"indicate the file path and directory to CMD next space,\n"
+			"CMD format:rtwpriv wlan0 efuse_bt_mask /xx/xx/xx/efuse.mask\n");
 		RTW_INFO("%s BT rtw_is_file_readable fail!\n", __func__);
 	}
 

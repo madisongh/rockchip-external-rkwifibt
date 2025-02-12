@@ -103,7 +103,7 @@ start_bt_rtk_uart()
 		return -1
 	fi
 
-	do_insmod hci_uart 0.5
+	do_insmod rtk_uart 0.5
 
 	rtk_hciattach -n -s 115200 $WIFIBT_TTY rtk_h5&
 }
@@ -284,7 +284,7 @@ suspend_wifibt()
 resume_wifibt()
 {
 	[ -r "$IF_FILE" ] || return 0
-
+	sleep 1
 	# Retore enabled interfaces
 	for iface in $(cat "$IF_FILE"); do
 		echo "Enabling $iface..."

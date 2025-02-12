@@ -115,6 +115,10 @@ u8 rtw_wmn_btm_rsp_reason_decision(_adapter *padapter, u8* req_mode)
 	if (!rtw_wnm_btm_diff_bss(padapter)) {
 		/* Reject - No suitable BSS transition candidates */
 		reason = 7;
+		RTW_INFO("WNM : Reject - No suitable BSS transition candidates,"
+			"roam_target_addr:" MAC_FMT ", cur_network_mac:" MAC_FMT "\n",
+			MAC_ARG(padapter->mlmepriv.nb_info.roam_target_addr),
+			MAC_ARG(padapter->mlmepriv.dev_cur_network.network.MacAddress));
 		goto candidate_remove;
 	}
 
@@ -135,8 +139,8 @@ u8 rtw_wmn_btm_rsp_reason_decision(_adapter *padapter, u8* req_mode)
 	if (recvinfo->signal_strength_data.avg_val >=
 		pmlmepriv->roam_rssi_threshold) {
 		reason = 1;
-		RTW_WNM_INFO("%s : Reject - under high roam rssi(%u, %u) \n",
-			__func__, recvinfo->signal_strength_data.avg_val,
+		RTW_INFO("WNM : Reject - under high roam rssi(%u, %u) \n",
+			recvinfo->signal_strength_data.avg_val,			
 			pmlmepriv->roam_rssi_threshold);
 		goto candidate_remove;
 	}
@@ -224,11 +228,11 @@ u8 rtw_wnm_btm_reassoc_req(_adapter *padapter)
 	struct roam_nb_info *pnb = &(pmlmepriv->nb_info);
 	u8 breassoc = _FALSE;
 
-	if (_rtw_memcmp(get_my_bssid(&(pmlmeinfo->network)),
+	if (_rtw_memcmp(get_my_bssid(&(pmlmeinfo->dev_network)),
 		pnb->roam_target_addr, ETH_ALEN)) {
 		RTW_WNM_INFO("%s : bss "MAC_FMT" found in roam_target "
 			MAC_FMT"\n", __func__,
-			MAC_ARG(get_my_bssid(&(pmlmeinfo->network))),
+			MAC_ARG(get_my_bssid(&(pmlmeinfo->dev_network))),
 			MAC_ARG(pnb->roam_target_addr));
 		breassoc = _TRUE;
 	}
@@ -293,12 +297,6 @@ u8 rtw_wnm_try_btm_roam_imnt(_adapter *padapter)
 	struct btm_rpt_cache *pcache = &(pnb->btm_cache);
 	u8 reason = 0, flag = 0;
 
-	if (!rtw_wnm_btm_preference_cap(padapter)) {
-		RTW_WNM_INFO("%s : no btm candidate can be used!\n",
-				__func__);
-		return 1;
-	}
-
 	flag = BIT(0) | BIT(1);
 	if (!rtw_wnm_btm_candidate_validity(pcache, flag))
 		return 1;
@@ -338,9 +336,9 @@ void rtw_wnm_process_btm_req(_adapter *padapter, u8* pframe, u32 frame_len)
 	if (offset == 0)
 		return;
 
-	if ((frame_len - offset) <= 15) {
-		RTW_INFO("WNM : Reject - "
-			"no suitable BSS transition candidates!\n");
+	if (req_hdr.req_mode & PREFERRED_CANDIDATE_LIST_INCLUDED && (frame_len - offset) < 15) {
+		RTW_INFO("WNM : Reject - Candidate list included bit is set,"
+			"but no BSS transition candidates found in BTM req!\n");
 		rtw_wnm_issue_action(padapter,
 			RTW_WLAN_ACTION_WNM_BTM_RSP, 7, req_hdr.dialog_token);
 		return;
@@ -362,7 +360,6 @@ void rtw_wnm_process_btm_req(_adapter *padapter, u8* pframe, u32 frame_len)
 			"(reason=%u)\n", __func__, reason);
 		reason = 0;
 		pnb->preference_en = _TRUE;
-		pnb->nb_rpt_valid = _FALSE;
 	}
 #endif
 
@@ -523,14 +520,16 @@ void rtw_wnm_hdr_init(_adapter *padapter,
 	u8 action, u8 **pcontent)
 {
 	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
-	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
 	struct pkt_attrib *pattrib;
 	struct rtw_ieee80211_hdr *pwlanhdr;
 	u16 *pfctrl;
 	u8 category;
+	/* ToDo CONFIG_RTW_MLD: [currently primary link only] */
+	struct _ADAPTER_LINK *padapter_link = GET_PRIMARY_LINK(padapter);
+	struct link_mlme_ext_info *pmlmeinfo = &(padapter_link->mlmeextpriv.mlmext_info);
 
 	pattrib = &(pactionframe->attrib);
-	update_mgntframe_attrib(padapter, pattrib);
+	update_mgntframe_attrib(padapter, padapter_link, pattrib);
 	_rtw_memset(pactionframe->buf_addr, 0,
 		(WLANHDR_OFFSET + TXDESC_OFFSET));
 
@@ -540,9 +539,8 @@ void rtw_wnm_hdr_init(_adapter *padapter,
 	*(pfctrl) = 0;
 
 	_rtw_memcpy(pwlanhdr->addr1, pmac, ETH_ALEN);
-	_rtw_memcpy(pwlanhdr->addr2, adapter_mac_addr(padapter), ETH_ALEN);
-	_rtw_memcpy(pwlanhdr->addr3,
-		get_my_bssid(&pmlmeinfo->network), ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr2, padapter_link->mac_addr, ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr3, get_my_bssid(&pmlmeinfo->network), ETH_ALEN);
 
 	SetSeqNum(pwlanhdr, pmlmeext->mgnt_seq);
 	pmlmeext->mgnt_seq++;
@@ -676,7 +674,6 @@ void rtw_wnm_issue_action(_adapter *padapter,
 	struct mlme_priv *pmlmepriv = &(padapter->mlmepriv);
 	struct xmit_priv *pxmitpriv = &(padapter->xmitpriv);
 	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
-	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
 	struct xmit_frame *pmgntframe;
 	struct rtw_ieee80211_hdr *pwlanhdr;
 	struct pkt_attrib *pattrib;
@@ -686,12 +683,15 @@ void rtw_wnm_issue_action(_adapter *padapter,
 	u8 mbo_notif_req_type ;
 #endif
 	u16 *fctrl;
+	/* ToDo CONFIG_RTW_MLD: [currently primary link only] */
+	struct _ADAPTER_LINK *padapter_link = GET_PRIMARY_LINK(padapter);
+	struct link_mlme_ext_info *pmlmeinfo = &(padapter_link->mlmeextpriv.mlmext_info);
 
 	if ((pmgntframe = alloc_mgtxmitframe(pxmitpriv)) == NULL)
 		return ;
 
 	pattrib = &(pmgntframe->attrib);
-	update_mgntframe_attrib(padapter, pattrib);
+	update_mgntframe_attrib(padapter, padapter_link, pattrib);
 	_rtw_memset(pmgntframe->buf_addr, 0, (WLANHDR_OFFSET + TXDESC_OFFSET));
 
 	pframe = (u8 *)(pmgntframe->buf_addr + TXDESC_OFFSET);
@@ -700,12 +700,9 @@ void rtw_wnm_issue_action(_adapter *padapter,
 	fctrl = &(pwlanhdr->frame_ctl);
 	*(fctrl) = 0;
 
-	_rtw_memcpy(pwlanhdr->addr1,
-		get_my_bssid(&pmlmeinfo->network), ETH_ALEN);
-	_rtw_memcpy(pwlanhdr->addr2,
-		adapter_mac_addr(padapter), ETH_ALEN);
-	_rtw_memcpy(pwlanhdr->addr3,
-		get_my_bssid(&pmlmeinfo->network), ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr1, get_my_bssid(&pmlmeinfo->network), ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr2, padapter_link->mac_addr, ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr3, get_my_bssid(&pmlmeinfo->network), ETH_ALEN);
 
 	SetSeqNum(pwlanhdr, pmlmeext->mgnt_seq);
 	pmlmeext->mgnt_seq++;
@@ -901,6 +898,7 @@ u8 rtw_roam_nb_scan_list_set(
 	for (i=0; i<pparm->ch_num; i++) {
 		pparm->ch[i].hw_value = pnb->nb_rpt_ch_list[i].hw_value;
 		pparm->ch[i].flags = RTW_IEEE80211_CHAN_PASSIVE_SCAN;
+		pparm->ch[i].band = pnb->nb_rpt_ch_list[i].band;
 	}
 
 	pmlmepriv->nb_info.nb_rpt_valid = _FALSE;
@@ -1073,8 +1071,10 @@ static void rtw_wnm_nb_info_update(
 
 		if (!is_found) {
 			pnb->nb_rpt_ch_list[pnb->nb_rpt_ch_list_num].hw_value =\
-				 pnb->nb_rpt[i].ch_num;
-				pnb->nb_rpt_ch_list_num++;
+				pnb->nb_rpt[i].ch_num;
+			pnb->nb_rpt_ch_list[pnb->nb_rpt_ch_list_num].band =
+				rtw_get_band_by_op_class(pnb->nb_rpt[i].reg_class);
+			pnb->nb_rpt_ch_list_num++;
 		}
 	}
 }
@@ -1096,7 +1096,7 @@ static void rtw_wnm_btm_candidate_select(_adapter *padapter)
 	for (i = 0; i < pnb->last_nb_rpt_entries; i++) {
 		if (ignore_currrent &&
 			(_rtw_memcmp(pnb->nb_rpt[i].bssid,\
-			padapter->mlmepriv.cur_network.network.MacAddress,
+			padapter->mlmepriv.dev_cur_network.network.MacAddress,
 			ETH_ALEN))) {
 			RTW_WNM_INFO("WNM : ignore candidate "MAC_FMT
 				" for it's connected(%u)!\n",
