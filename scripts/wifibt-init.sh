@@ -1,36 +1,46 @@
 #!/bin/sh -e
 
 IF_FILE="/var/run/.wifibt-interfaces"
+RELOAD_FILE="/var/run/.wifibt-reload"
 
+# usage: do_insmod <module> [sleep:<time>] [options]
 do_insmod()
 {
-	if ! lsmod | grep -wq "$1"; then
-		echo "Installing $1.ko ..."
-		if [ "$1" = "rk960" ]; then
-			insmod "$1.ko" fw_no_sleep=1
-		else
-			insmod "$1.ko"
-		fi
-		sleep "${2:-0}"
+	local MODULE="${1%.ko}.ko" SLEEP=0
+	shift
+
+	if lsmod | grep -wq "${MODULE%.ko}"; then
+		return 0
 	fi
+
+	echo "Installing $MODULE $@..."
+
+	case "$1" in
+		"sleep:"*) SLEEP="${1#*:}"; shift ;;
+	esac
+
+	insmod "$MODULE" "$@"
+	sleep "$SLEEP"
 }
 
 try_insmod()
 {
-	if [ -f "$1.ko" ]; then
-		do_insmod "$1" $2
+	if [ -f "${1%.ko}.ko" ]; then
+		do_insmod $@
 	fi
 }
 
 wifi_interfaces()
 {
-	for DEV in $(sed '1,2d;s/:.*//' /proc/net/dev); do
-		case $DEV in
+	for d in /sys/class/net/*; do
+		local DEV="$(basename "$d")"
+		local UEVENT="$d/uevent"
+		case "$DEV" in
 			lo | eth*) ;;
 			p2p* | wlan*) echo $DEV ;;
 			*)
-				if grep -wq "DEVTYPE=wlan" \
-					/sys/class/net/$DEV/uevent; then
+				if [ -f "$UEVENT" ] && \
+					grep -wq "DEVTYPE=wlan" "$UEVENT"; then
 					echo $DEV
 				fi
 				;;
@@ -56,7 +66,7 @@ rfkill_for_type()
 
 bt_reset()
 {
-	RFKILL=$(rfkill_for_type bluetooth)
+	local RFKILL=$(rfkill_for_type bluetooth)
 	[ "$RFKILL" ] || return 0
 
 	echo 0 | tee $RFKILL >/dev/null
@@ -103,7 +113,7 @@ start_bt_rtk_uart()
 		return -1
 	fi
 
-	do_insmod hci_uart 0.5
+	do_insmod hci_uart "sleep:0.5"
 
 	rtk_hciattach -n -s 115200 $WIFIBT_TTY rtk_h5&
 }
@@ -131,15 +141,13 @@ start_wifi()
 		return 0
 	fi
 
-	cd "${WIFIBT_MODULE_DIR:-/lib/modules}"
-
 	case "$WIFIBT_VENDOR" in
 		Broadcom) try_insmod dhd_static_buf ;;
 		Realtek) try_insmod rtkm ;;
 	esac
 
-	echo "Wi-Fi/BT module: $WIFIBT_MODULE.ko"
-	do_insmod "$WIFIBT_MODULE"
+	echo "Wi-Fi/BT module: $WIFIBT_MODULE"
+	do_insmod ${WIFIBT_MODULE//:/ }
 
 	for i in `seq 60`; do
 		if wifi_ready; then
@@ -207,18 +215,8 @@ start_bt()
 
 start_wifibt()
 {
-	WIFIBT_CHIP=$(wifibt-util.sh chip || true)
-	if [ -z "$WIFIBT_CHIP" ]; then
-		echo "Failed to detect Wi-Fi/BT chip!"
-		return 1
-	fi
-
-	WIFIBT_VENDOR="$(wifibt-util.sh vendor)"
-	WIFIBT_BUS="$(wifibt-util.sh bus)"
-	WIFIBT_MODULE="$(wifibt-util.sh module | cut -d'.' -f1)"
-	WIFIBT_TTY=$(wifibt-util.sh tty)
-
-	echo -e "\nHandling $1 for Wi-Fi/BT chip:\n$(wifibt-util.sh info)"
+	echo -e "\nHandling $1 for Wi-Fi/BT chip:"
+	wifibt-util.sh info | xargs
 
 	case "$1" in
 		start | restart)
@@ -251,7 +249,7 @@ stop_wifi()
 stop_bt()
 {
 	hciconfig hci0 down 2>/dev/null || true
-	killall -q -9 brcm_patchram_plus1 rtk_hciattach || true
+	killall -q -9 brcm_patchram_plus1 rtk_hciattach rk_hciattach || true
 }
 
 stop_wifibt()
@@ -260,6 +258,56 @@ stop_wifibt()
 	stop_wifi
 	stop_bt
 	echo "Done"
+}
+
+unload_wifibt()
+{
+	local MODULE_NAME="${WIFIBT_MODULE%.ko*}"
+	if ! lsmod | grep -wq "$MODULE_NAME"; then
+		return 0
+	fi
+
+	touch $RELOAD_FILE
+
+	echo "Uninstalling $MODULE_NAME..."
+	rmmod $MODULE_NAME || true
+
+	local BUS_DEV="$(find /sys/devices/platform/ -name $WIFIBT_DEVICE | \
+		cut -d'/' -f5 || true)"
+	[ "$BUS_DEV" ] || return 0
+
+	local BUS_DRV="$(realpath "/sys/devices/platform/$BUS_DEV/driver")"
+	[ "$BUS_DRV" ] || return 0
+
+	[ -e $BUS_DRV/$BUS_DEV ] || return 0
+
+	echo "$BUS_DEV:$BUS_DRV" > $RELOAD_FILE
+
+	echo "Unbinding $BUS_DEV..."
+	echo "$BUS_DEV" > $BUS_DRV/unbind
+}
+
+reload_wifibt()
+{
+	[ -f "$RELOAD_FILE" ] || return 0
+
+	local BUS_DEV="$(cat "$RELOAD_FILE" | cut -d':' -f1 || true)"
+	local BUS_DRV="$(cat "$RELOAD_FILE" | cut -d':' -f2 || true)"
+	rm -f "$RELOAD_FILE"
+
+	if [ "$BUS_DEV" ] && [ "$BUS_DRV" ] && [ ! -e $BUS_DRV/$BUS_DEV ]; then
+		echo "Binding $BUS_DEV..."
+		echo "$BUS_DEV" > $BUS_DRV/bind
+	fi
+
+	do_insmod ${WIFIBT_MODULE//:/ }
+
+	for i in `seq 60`; do
+		if wifi_ready; then
+			return 0
+		fi
+		sleep .1
+	done
 }
 
 suspend_wifibt()
@@ -279,10 +327,18 @@ suspend_wifibt()
 		echo "BT" >> "$IF_FILE"
 		stop_bt
 	fi
+
+	case "$WIFIBT_QUIRK" in
+		suspend-reload) unload_wifibt ;;
+	esac
 }
 
 resume_wifibt()
 {
+	case "$WIFIBT_QUIRK" in
+		suspend-reload) reload_wifibt ;;
+	esac
+
 	[ -r "$IF_FILE" ] || return 0
 
 	# Retore enabled interfaces
@@ -296,6 +352,21 @@ resume_wifibt()
 
 	rm -f "$IF_FILE"
 }
+
+WIFIBT_CHIP=$(wifibt-util.sh chip || true)
+if [ -z "$WIFIBT_CHIP" ]; then
+	echo "Failed to detect Wi-Fi/BT chip!"
+	exit 1
+fi
+
+WIFIBT_VENDOR="$(wifibt-util.sh vendor)"
+WIFIBT_BUS="$(wifibt-util.sh bus)"
+WIFIBT_DEVICE="$(wifibt-util.sh device)"
+WIFIBT_MODULE="$(wifibt-util.sh module)"
+WIFIBT_TTY=$(wifibt-util.sh tty)
+WIFIBT_QUIRK=$(wifibt-util.sh quirk)
+
+cd "${WIFIBT_MODULE_DIR:-/lib/modules}"
 
 case "$1" in
 	start | restart | start_wifi | start_bt | "")
