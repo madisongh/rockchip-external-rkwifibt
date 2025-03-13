@@ -1,4 +1,4 @@
-#!/bin/sh -e
+#!/bin/bash -e
 
 IF_FILE="/var/run/.wifibt-interfaces"
 RELOAD_FILE="/var/run/.wifibt-reload"
