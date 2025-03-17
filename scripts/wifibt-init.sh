@@ -110,7 +110,7 @@ start_bt_rtk_uart()
 
 	if [ -d /sys/module/hci_uart ]; then
 		echo "Please disable CONFIG_BT_HCIUART in kernel!"
-		return -1
+		return 1
 	fi
 
 	do_insmod hci_uart "sleep:0.5"
@@ -124,7 +124,7 @@ start_bt_rtk_usb()
 
 	if [ -d /sys/module/btusb ]; then
 		echo "Please disable CONFIG_BT_HCIBTUSB in kernel!"
-		return -1
+		return 1
 	fi
 
 	do_insmod rtk_btusb
