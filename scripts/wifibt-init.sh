@@ -1,6 +1,7 @@
 #!/bin/bash -e
 
-IF_FILE="/var/run/.wifibt-interfaces"
+WIFI_FILE="/var/run/.wifi-interfaces"
+BT_FILE="/var/run/.bt-state"
 RELOAD_FILE="/var/run/.wifibt-reload"
 
 # usage: do_insmod <module> [sleep:<time>] [options]
@@ -58,159 +59,195 @@ bt_ready()
 	hciconfig | grep -wqE "hci0"
 }
 
-rfkill_for_type()
+wait_wifi()
 {
-	grep -rl "^${1:-bluetooth}$" /sys/class/rfkill/*/type | \
-		sed 's/type$/state/' 2>/dev/null || true
+	for i in `seq 60`; do
+		if wifi_ready; then
+			return 0
+		fi
+		sleep .1
+	done
+	return 1
 }
 
-bt_reset()
+wait_bt()
 {
-	local RFKILL=$(rfkill_for_type bluetooth)
-	[ "$RFKILL" ] || return 0
-
-	echo 0 | tee $RFKILL >/dev/null
-	echo 0 > /proc/bluetooth/sleep/btwrite
-	sleep .5
-	echo 1 | tee $RFKILL >/dev/null
-	echo 1 > /proc/bluetooth/sleep/btwrite
-	sleep .5
+	for i in `seq 60`; do
+		if bt_ready; then
+			return 0
+		fi
+		sleep .1
+	done
+	return 1
 }
 
-start_bt_brcm()
+# Blocked init for Broadcom uart BT
+init_bt_brcm()
 {
-	killall -q -9 brcm_patchram_plus1 || true
 	which brcm_patchram_plus1 >/dev/null
-
-	bt_reset
 
 	brcm_patchram_plus1 --enable_hci --no2bytes \
 		--use_baudrate_for_download --tosleep 200000 \
 		--baudrate 1500000 \
-		--patchram ${WIFIBT_FIRMWARE_DIR:-/lib/firmware}/ $WIFIBT_TTY&
+		--patchram ${WIFIBT_FIRMWARE_DIR:-/lib/firmware}/ $WIFIBT_TTY
 }
 
-
-start_bt_rk_uart()
+# Blocked init for Rockchip uart BT
+init_bt_rk_uart()
 {
-	killall -q -9 rk_hciattach || true
 	which rk_hciattach >/dev/null
 
-	bt_reset
-
-	rk_hciattach -n -s 115200 $WIFIBT_TTY rockchip 3000000 flow nosleep 11:22:33:44:55:66&
+	rk_hciattach -n -s 115200 $WIFIBT_TTY rockchip 3000000 flow nosleep \
+		11:22:33:44:55:66
 }
 
-start_bt_rtk_uart()
+# Blocked init for Realtek uart BT
+init_bt_rtk_uart()
 {
-	killall -q -9 rtk_hciattach || true
 	which rtk_hciattach >/dev/null
 
-	bt_reset
+	if ! lsmod | grep -wq hci_uart; then
+		if [ -d /sys/module/hci_uart ]; then
+			echo "Please disable CONFIG_BT_HCIUART in kernel!"
+			return 1
+		fi
 
-	if [ -d /sys/module/hci_uart ]; then
-		echo "Please disable CONFIG_BT_HCIUART in kernel!"
-		return 1
+		do_insmod hci_uart "sleep:0.5"
 	fi
 
-	do_insmod hci_uart "sleep:0.5"
-
-	rtk_hciattach -n -s 115200 $WIFIBT_TTY rtk_h5&
+	rtk_hciattach -n -s 115200 $WIFIBT_TTY rtk_h5
 }
 
-start_bt_rtk_usb()
+# Blocked init for Realtek USB BT
+init_bt_rtk_usb()
 {
-	bt_reset
-
 	if [ -d /sys/module/btusb ]; then
 		echo "Please disable CONFIG_BT_HCIBTUSB in kernel!"
 		return 1
 	fi
 
 	do_insmod rtk_btusb
+
+	# Wait for BT disabled
+	while [ -r "$BT_FILE" ]; do
+		sleep 1
+	done
 }
 
-start_wifi()
+# Blocked re-init
+do_init_bt()
 {
-	if wifi_ready; then
-		echo "Wi-Fi is already inited..."
-		for iface in $(wifi_interfaces); do
-			ifup $iface 2>/dev/null || true &
-			ifconfig $iface up || true
+	cd "${WIFIBT_MODULE_DIR:-/lib/modules}"
+
+	# Reset BT
+	stop_bt
+	local RFKILL=$(grep -rl "^bluetooth" /sys/class/rfkill/*/type | \
+		sed 's/type$/state/' 2>/dev/null || true)
+	if [ "$RFKILL" ]; then
+		echo 0 | tee $RFKILL >/dev/null
+		echo 0 > /proc/bluetooth/sleep/btwrite
+		sleep .5
+		echo 1 | tee $RFKILL >/dev/null
+		echo 1 > /proc/bluetooth/sleep/btwrite
+		sleep .5
+	fi
+
+	# Blocked init
+	case "$WIFIBT_VENDOR" in
+		Rockchip) init_bt_rk_uart;;
+		Broadcom) init_bt_brcm;;
+		Realtek)
+			case "$WIFIBT_BUS" in
+				usb) init_bt_rtk_usb;;
+				*) init_bt_rtk_uart;;
+			esac
+			;;
+		*)
+			echo "Unknown Wi-Fi/BT chip, fallback to Broadcom..."
+			init_bt_brcm
+			;;
+	esac
+}
+
+init_bt()
+{
+	echo enable > "$BT_FILE"
+
+	# BT guardian
+	{
+		# Keep BT alive when enabled
+		while [ -r "$BT_FILE" ]; do
+			# BT suspended
+			if grep -wq suspended "$BT_FILE"; then
+				sleep .5
+				continue
+			fi
+
+			# Blocked init
+			do_init_bt
 		done
+	}&
+
+	wait_bt
+}
+
+start_bt()
+{
+	if bt_ready; then
+		echo "BT is already inited..."
 		return 0
 	fi
+
+	if ! init_bt; then
+		echo "Failed to init BT for $WIFIBT_CHIP!"
+		rm -rf "$BT_FILE"
+		return 1
+	fi
+
+	echo "Successfully init BT for $WIFIBT_CHIP!"
+}
+
+init_wifi()
+{
+	echo "Wi-Fi module: $WIFIBT_MODULE"
 
 	case "$WIFIBT_VENDOR" in
 		Broadcom) try_insmod dhd_static_buf ;;
 		Realtek) try_insmod rtkm ;;
 	esac
 
-	echo "Wi-Fi/BT module: $WIFIBT_MODULE"
-	do_insmod ${WIFIBT_MODULE//:/ }
+	do_insmod $(echo $WIFIBT_MODULE | tr ':' ' ')
 
-	for i in `seq 60`; do
-		if wifi_ready; then
-			for iface in $(wifi_interfaces); do
-				ifup $iface 2>/dev/null || true &
-				ifconfig $iface up || true
-			done
-			echo "Successfully init Wi-Fi for $WIFIBT_CHIP!"
-			return 0
-		fi
-		sleep .1
+	wait_wifi
+}
+
+enable_wifi()
+{
+	for iface in $(cat "$WIFI_FILE" 2>/dev/null || true); do
+		echo "Enabling $iface..."
+		ifup $iface 2>/dev/null || true &
+		ifconfig $iface up || true
 	done
-
-	echo "Failed to init Wi-Fi for $WIFIBT_CHIP!"
-	return 1
 }
 
-do_start_bt()
+start_wifi()
 {
-	cd "${WIFIBT_MODULE_DIR:-/lib/modules}"
-
-	case "$WIFIBT_VENDOR" in
-		Rockchip) start_bt_rk_uart;;
-		Broadcom) start_bt_brcm;;
-		Realtek)
-			case "$WIFIBT_BUS" in
-				usb) start_bt_rtk_usb;;
-				*) start_bt_rtk_uart;;
-			esac
-			;;
-		*)
-			echo "Unknown Wi-Fi/BT chip, fallback to Broadcom..."
-			start_bt_brcm
-			;;
-	esac
-}
-
-start_bt()
-{
-	if ! wifi_ready; then
-		echo "Wi-Fi is not ready..."
-		return 1
-	fi
-
-	if bt_ready; then
-		echo "BT is already inited..."
-		#hciconfig hci0 up 2>/dev/null || true
+	if wifi_ready; then
+		echo "Wi-Fi is already inited..."
+		enable_wifi
 		return 0
 	fi
 
-	if do_start_bt; then
-		for i in `seq 60`; do
-			if bt_ready; then
-				echo "Successfully init BT for $WIFIBT_CHIP!"
-				#hciconfig hci0 up 2>/dev/null || true
-				return 0
-			fi
-			sleep .1
-		done
+	if ! init_wifi; then
+		echo "Failed to init Wi-Fi for $WIFIBT_CHIP!"
+		return 1
 	fi
 
-	echo "Failed to init BT for $WIFIBT_CHIP!"
-	return 1
+	# Enable all available Wi-Fi interfaces
+	wifi_interfaces > "$WIFI_FILE" || true
+	enable_wifi
+
+	echo "Successfully init Wi-Fi for $WIFIBT_CHIP!"
 }
 
 start_wifibt()
@@ -241,6 +278,7 @@ start_wifibt()
 stop_wifi()
 {
 	for iface in $(wifi_interfaces); do
+		echo "Disabling $iface..."
 		ifdown $iface 2>/dev/null || true &
 		ifconfig $iface down || true
 	done
@@ -248,29 +286,35 @@ stop_wifi()
 
 stop_bt()
 {
-	hciconfig hci0 down 2>/dev/null || true
+	if bt_ready; then
+		echo "Disabling BT..."
+		hciconfig hci0 down || true
+	fi
 	killall -q -9 brcm_patchram_plus1 rtk_hciattach rk_hciattach || true
 }
 
 stop_wifibt()
 {
 	echo -n "Stopping Wi-Fi/BT..."
+	rm -rf "$WIFI_FILE"
 	stop_wifi
+
+	rm -rf "$BT_FILE"
 	stop_bt
 	echo "Done"
 }
 
 unload_wifibt()
 {
+	rm -rf $RELOAD_FILE
+
+	# Unload Wi-Fi module
 	local MODULE_NAME="${WIFIBT_MODULE%.ko*}"
-	if ! lsmod | grep -wq "$MODULE_NAME"; then
-		return 0
+	if lsmod | grep -wq "$MODULE_NAME"; then
+		echo "Uninstalling $MODULE_NAME..."
+		rmmod $MODULE_NAME || true
+		echo "module:$MODULE_NAME" > $RELOAD_FILE
 	fi
-
-	touch $RELOAD_FILE
-
-	echo "Uninstalling $MODULE_NAME..."
-	rmmod $MODULE_NAME || true
 
 	local BUS_DEV="$(find /sys/devices/platform/ -name $WIFIBT_DEVICE | \
 		cut -d'/' -f5 || true)"
@@ -281,8 +325,9 @@ unload_wifibt()
 
 	[ -e $BUS_DRV/$BUS_DEV ] || return 0
 
-	echo "$BUS_DEV:$BUS_DRV" > $RELOAD_FILE
+	echo "bus:$BUS_DEV:$BUS_DRV" >> $RELOAD_FILE
 
+	# Unbind BUS driver to workaround hardware issue
 	echo "Unbinding $BUS_DEV..."
 	echo "$BUS_DEV" > $BUS_DRV/unbind
 }
@@ -291,42 +336,37 @@ reload_wifibt()
 {
 	[ -f "$RELOAD_FILE" ] || return 0
 
-	local BUS_DEV="$(cat "$RELOAD_FILE" | cut -d':' -f1 || true)"
-	local BUS_DRV="$(cat "$RELOAD_FILE" | cut -d':' -f2 || true)"
+	local MODULE_NAME="$(grep "^module:" "$RELOAD_FILE" | \
+		cut -d':' -f2 || true)"
+	local BUS_DEV="$(grep "^bus:" "$RELOAD_FILE" | cut -d':' -f2 || true)"
+	local BUS_DRV="$(grep "^bus:" "$RELOAD_FILE" | cut -d':' -f3 || true)"
 	rm -f "$RELOAD_FILE"
 
+	# Bind BUS driver
 	if [ "$BUS_DEV" ] && [ "$BUS_DRV" ] && [ ! -e $BUS_DRV/$BUS_DEV ]; then
 		echo "Binding $BUS_DEV..."
 		echo "$BUS_DEV" > $BUS_DRV/bind
 	fi
 
-	do_insmod ${WIFIBT_MODULE//:/ }
-
-	for i in `seq 60`; do
-		if wifi_ready; then
-			return 0
-		fi
-		sleep .1
-	done
+	# Reload Wi-Fi module
+	if [ "$MODULE_NAME" ]; then
+		init_wifi || true
+	fi
 }
 
 suspend_wifibt()
 {
-	# Store enabled Wi-Fi interfaces
-	wifi_interfaces > "$IF_FILE" || true
+	# Mark BT suspended
+	if [ -r "$BT_FILE" ]; then
+		echo suspended > "$BT_FILE"
 
-	# Disable enabled Wi-Fi interfaces
-	for iface in $(cat "$IF_FILE"); do
-		echo "Disabling $iface..."
-		ifconfig $iface down || true
-	done
-
-	# Restart BT later in resume, since it might lose power during S2R
-	if bt_ready; then
-		echo "Disabling BT..."
-		echo "BT" >> "$IF_FILE"
+		# Restart BT later in resume, since it might lose power during S2R
 		stop_bt
 	fi
+
+	# Store enabled Wi-Fi interfaces
+	wifi_interfaces > "$WIFI_FILE" || true
+	stop_wifi
 
 	case "$WIFIBT_QUIRK" in
 		suspend-reload) unload_wifibt ;;
@@ -339,18 +379,15 @@ resume_wifibt()
 		suspend-reload) reload_wifibt ;;
 	esac
 
-	[ -r "$IF_FILE" ] || return 0
+	# Retore enabled Wi-Fi interfaces
+	enable_wifi
 
-	# Retore enabled interfaces
-	for iface in $(cat "$IF_FILE"); do
-		echo "Enabling $iface..."
-		case $iface in
-			BT) start_wifibt start_bt || true ;;
-			*) ifconfig $iface up || true ;;
-		esac
-	done
+	if [ -r "$BT_FILE" ]; then
+		echo "Enabling BT..."
 
-	rm -f "$IF_FILE"
+		# Kick the BT guardian to re-init it
+		echo "enable" > "$BT_FILE"
+	fi
 }
 
 WIFIBT_CHIP=$(wifibt-util.sh chip || true)
@@ -374,7 +411,7 @@ case "$1" in
 		;;
 	stop) stop_wifibt ;;
 	suspend) suspend_wifibt ;;
-	resume) resume_wifibt & ;;
+	resume) resume_wifibt ;;
 	*)
 		echo "Usage: [start|stop|start_wifi|start_bt|restart|suspend|resume]" >&2
 		exit 3
