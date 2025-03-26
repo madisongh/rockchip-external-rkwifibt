@@ -23,5 +23,6 @@ void rk960_enable_powersave(struct rk960_vif *priv, bool enable);
 int wsm_release_tx_buffer(struct rk960_common *hw_priv, int count);
 int wsm_release_vif_tx_buffer(struct rk960_common *hw_priv, int if_id,
 			      int count);
+void hwbus_rcvbuf_init(struct rk960_common *hw_priv);
 
 #endif /* RK960_BH_H */

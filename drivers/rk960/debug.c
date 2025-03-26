@@ -34,7 +34,9 @@ int rk960_debug_flag =
 	DEBUG_FW_REC;
 
 static int debug_level =
-	DEBUG_LEVEL_ERROR;
+	DEBUG_LEVEL_ERROR	|
+	DEBUG_LEVEL_INFO/*	|
+	DEBUG_LEVEL_DEBUG*/;
 module_param(debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "debug level");
 
@@ -1100,6 +1102,21 @@ static const struct file_operations fops_fw_dbg_level = {
 	.llseek = default_llseek,
 };
 
+static ssize_t rk960_drv_dbg_level_read(struct file *file,
+				      char __user * user_buf, size_t count,
+				      loff_t * ppos)
+{
+	//struct rk960_common *hw_priv = file->private_data;
+	char buf[16];
+	size_t size = 0;
+	u32 dbg_level= rk960_debug_level;
+
+	//wsm_get_fw_dbg_level(hw_priv, &dbg_level);
+
+	sprintf(buf, "%x\n", dbg_level);
+	size = strlen(buf);
+	return simple_read_from_buffer(user_buf, count, ppos, buf, size);
+}
 #ifdef ENABLE_DBGFS_WRITE
 static ssize_t rk960_drv_dbg_level_write(struct file *file,
 					 const char __user * user_buf,
@@ -1121,11 +1138,27 @@ static ssize_t rk960_drv_dbg_level_write(struct file *file,
 
 static const struct file_operations fops_drv_dbg_level = {
 	.open = rk960_generic_open,
+	.read = rk960_drv_dbg_level_read,
 #ifdef ENABLE_DBGFS_WRITE
 	.write = rk960_drv_dbg_level_write,
 #endif
 	.llseek = default_llseek,
 };
+static ssize_t rk960_drv_dbg_flag_read(struct file *file,
+				      char __user * user_buf, size_t count,
+				      loff_t * ppos)
+{
+	//struct rk960_common *hw_priv = file->private_data;
+	char buf[16];
+	size_t size = 0;
+	u32 dbg_level= rk960_debug_flag;
+
+	//wsm_get_fw_dbg_level(hw_priv, &dbg_level);
+
+	sprintf(buf, "%x\n", dbg_level);
+	size = strlen(buf);
+	return simple_read_from_buffer(user_buf, count, ppos, buf, size);
+}
 
 #ifdef ENABLE_DBGFS_WRITE
 static ssize_t rk960_drv_dbg_flag_write(struct file *file,
@@ -1148,6 +1181,7 @@ static ssize_t rk960_drv_dbg_flag_write(struct file *file,
 
 static const struct file_operations fops_drv_dbg_flag = {
 	.open = rk960_generic_open,
+	.read = rk960_drv_dbg_flag_read,
 #ifdef ENABLE_DBGFS_WRITE
 	.write = rk960_drv_dbg_flag_write,
 #endif
@@ -2503,6 +2537,79 @@ void dump_ieee80211_hdr_info(unsigned char *data, int len, int tx, s8 rssi)
 		}
 	}
 }
+
+#ifdef SUPPORT_RK962_POWERSAVE
+int filter_ieee80211_keepalive_frame(unsigned char *data, int len, int tx, int iv_len, u32 keepalive_ip, int keepalive_port)
+{
+	int filter_ip, filter_port;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)data;
+	u16 fc = hdr->frame_control;
+	int keepalive_offset;
+	filter_ip = 0;
+	filter_port = 0;
+
+	if (ieee80211_is_data(fc)) {
+		int offset, ieee8022_hdrlen;
+		u8 *ieee8022_payload;
+		int ethertype;
+		u16 send_data_length = 0;
+		struct iphdr *ip;
+
+		offset = ieee80211_hdrlen(fc);	/* 802.11 header */
+		if (!tx)
+			offset += ieee80211_crypt_hdrlen(fc);	/* crypt header */
+
+		if (offset >= len) {
+			return -1;
+		}
+
+		offset += iv_len;
+		ieee8022_payload = data + offset;	/* ieee802.2 ll header */
+		ethertype = (ieee8022_payload[6] << 8) | ieee8022_payload[7];
+		ieee8022_hdrlen =
+		    ieee8022_ll_hdrlen(ieee8022_payload, ethertype);
+
+		if (ieee8022_hdrlen && ethertype == ETH_P_IP	/* &&
+								   ethertype == ETH_P_IPV6 */ ) {
+			offset += ieee8022_hdrlen;
+			ip = (struct iphdr *)(data + offset);	/* IP header */
+
+			if(ip->daddr == keepalive_ip)
+			{
+				filter_ip = 1;
+			}
+
+			if (ip->protocol == IPPROTO_TCP) {
+				struct tcphdr *th =
+				    (struct tcphdr *)((u8 *) ip + ip->ihl * 4);
+
+				if(keepalive_port == ntohs(th->dest))
+					filter_port = 1;
+
+				send_data_length = ntohs(ip->tot_len) - (ip->ihl * 4) - (th->doff * 4);
+				if(send_data_length <= 1) {
+					RK960_INFO_TXRX("ERROR !!! send_data_length = %d !!! Keepalive data length must be greater than or equal to 1 !!!\n", send_data_length);
+					return 0;
+				}
+				if((1 != th->ack) || (0 != th->syn) || (0 != th->fin) || (0 != th->rst)) {
+					RK960_INFO_TXRX("th->ack = %d th->syn = %d,th->fin = %d,th->rst = %d , c_asfr !!!\n", th->ack,th->syn, th->fin,th->rst);
+					return 0;
+				}
+				RK960_INFO_TXRX("%s keepalive parameter offset = %d\n", __func__, offset + sizeof(struct iphdr) + sizeof(struct tcphdr));
+				offset += ip->ihl * 4 + th->doff * 4;
+
+				keepalive_offset = offset;
+				RK960_INFO_TXRX("%s keepalive offset = %d\n", __func__, keepalive_offset);
+			}
+		}
+	}
+
+	if(filter_ip && filter_port)
+		return keepalive_offset;
+	else
+		return 0;
+}
+#endif
 #else
 void dump_ieee80211_hdr_info(unsigned char *data, int len, int tx, s8 rssi)
 {

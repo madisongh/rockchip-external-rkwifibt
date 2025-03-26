@@ -600,6 +600,8 @@ struct rk960_common;
 
 /* tx max aggregation control */
 #define WSM_MIB_ID_TX_AGG_CONTROL                   0x104B
+/* set the WPA SM */
+#define WSM_MIB_ID_SET_WPA_SM                       0x104C
 
 /* Frame template types */
 #define WSM_FRAME_TYPE_PROBE_REQUEST	(0)
@@ -1680,6 +1682,53 @@ static inline int wsm_set_sdio_data_width(struct rk960_common *hw_priv,
 			     &arg, sizeof(arg), if_id);
 }
 
+#ifdef SUPPORT_RK962_POWERSAVE
+/*WSM_MIB_ID_TEMPLATE_FRAME, quzz add*/
+/*
+ * 4.11 TemplateFrame
+ */
+#define TEMPLATE_FRAME_TCPKEEPALIVEREQUEST_TYPE       8
+#define WSM_MAX_TEMPLATE_FRAME_SIZE     1024
+struct alive_templateframe {
+	u8   FrameType;
+	u8   Rate;
+	u16  FrameLength;
+	u8  Frame[WSM_MAX_TEMPLATE_FRAME_SIZE];
+};
+int wsm_write_template_frame(struct rk960_common *hw_priv, void *_buf, size_t buf_size, int if_id);
+int wsm_write_wpa_sm(struct rk960_common *hw_priv, void *_buf, size_t buf_size, int if_id);
+
+struct keepalive_param{
+	u32 TcpKeepAlive;          /* The unit is seconds */
+	u32 TcpKeepInterval;       /* The unit is seconds */
+	u32 TcpKeepCount;          /* The Max retry counts */
+	u32 IsEnabledTcpkeepalive; /* Whether to enable tcp keepalive function, Enable is 1, Disable is 0 */
+	u32 WakeupLen;
+	u8  WakeupData[28];
+};
+
+#define WSM_GENERIC_REQ_ID 0x0003
+#define WSM_GENERIC_RESP_ID 0x0403
+#define HI_GEN_REQ_TCPKEEPALIVE_REQ_ID	  4
+
+struct wsm_gen_req{
+	__le32 req_id;
+	u32	   req_len;
+	u8	   *params;
+};
+
+int wsm_generic_req(struct rk960_common *hw_priv,const struct wsm_gen_req *arg,int if_id);
+static inline int wsm_req_keepalive_info(struct rk960_common *hw_priv,struct keepalive_param *req,int if_id)
+{
+	struct wsm_gen_req arg;
+
+	arg.req_id = HI_GEN_REQ_TCPKEEPALIVE_REQ_ID;
+	arg.params = (u8*)req;
+	arg.req_len = sizeof(struct keepalive_param);
+
+	return wsm_generic_req(hw_priv, &arg, if_id);
+}
+#endif
 #define RK960_LPO_INTERNAL  2
 #define RK960_LPO_EXTERNAL  1
 

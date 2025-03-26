@@ -25,7 +25,9 @@ extern int rk960_debug_level;
 #define ERROR_TAG "ERROR: "
 
 void dump_ieee80211_hdr_info(unsigned char *data, int len, int tx, s8 rssi);
-
+#ifdef SUPPORT_RK962_POWERSAVE
+int filter_ieee80211_keepalive_frame(unsigned char *data, int len, int tx, int iv_len, u32 keepalive_ip, int keepalive_port);
+#endif
 #define RK960_DEBUG_BH(fmt, ...)            \
 do {                                          \
 	if (rk960_debug_flag & DEBUG_BH &&	\

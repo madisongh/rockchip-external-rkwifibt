@@ -119,7 +119,7 @@
  */
 #define RK960_CSYNC_ADJUST_INTERVAL    (1 * HZ)
 #define RK960_CSYNC_MAX_RSSI_SAMPLE 100
-#define RK960_CSYNC_MIN_RSSI_SAMPLE 10
+#define RK960_CSYNC_MIN_RSSI_SAMPLE 4
 
 #define RK960_CSYNC_THRESH_MIN	110
 #define RK960_CSYNC_THRESH_MAX	190
@@ -285,7 +285,7 @@ struct wsm_com_cmd_s {
 
 struct rk960_sended_wsm_cmds_s {
 	struct wsm_com_cmd_s wsm_wmib_cmd[2][128];
-	struct wsm_com_cmd_s wsm_wmib_tem_fra_cmd[2][8];
+	struct wsm_com_cmd_s wsm_wmib_tem_fra_cmd[2][9];
 	struct wsm_com_cmd_s wsm_wmib_tx_pol_cmd[2];
 	struct wsm_com_cmd_s wsm_configuration_cmd[2];
 	struct wsm_com_cmd_s wsm_join_cmd[2];
@@ -355,6 +355,7 @@ struct rk960_common {
 	int rcvbuf_offset;
 	u8 *hwbus_sndbuf;
 	int sndbuf_offset;
+	int sndbuf_tx_count;
 
 	/* HW/FW type (HIF_...) */
 	int hw_type;
@@ -499,6 +500,10 @@ struct rk960_common {
 
 	struct mutex wsm_oper_lock;
 	struct delayed_work rem_chan_timeout;
+#ifdef SUPPORT_RK962_POWERSAVE
+	struct delayed_work keepalive_timeout;
+    struct delayed_work rk960_wpa_sm_timeout;
+#endif
 	atomic_t remain_on_channel;
 	atomic_t cancel_roc;
 	unsigned long roc_start_time;
@@ -617,6 +622,7 @@ struct rk960_common {
         wait_queue_head_t fwcr_resume_done;
         u8 fwcr_bssid[6];
         int fwcr_update_key;
+        u32 fwcr_encrypt_ap;
         u32 fwcr_key_map;
         struct wsm_add_key fwcr_keys[WSM_KEY_MAX_INDEX + 1];
 #endif

@@ -17,6 +17,13 @@
 #include <linux/vmalloc.h>
 #include <linux/random.h>
 #include <linux/sched.h>
+
+#include <linux/fs.h>
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/fcntl.h>
+
 #include <net/mac80211.h>
 #include <../net/mac80211/ieee80211_i.h>
 
@@ -31,7 +38,19 @@
 #include "scan.h"
 #include "debug.h"
 #include "pm.h"
+#if defined(RK960_FW_ERROR_RECOVERY) && defined(SUPPORT_RK962_POWERSAVE)
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#include <linux/eventfd.h>
+#include <linux/err.h>
+#endif
 
+#if defined(RK960_FW_ERROR_RECOVERY) && defined(SUPPORT_RK962_POWERSAVE)
+#define RK962_RECOVERY_EVENTFD_VALUE  0x5A5A5B5B
+#endif
+#ifdef SUPPORT_FWCR
+#define FASTLINK_SNONCE_PATH "/data/fastlink_snonce.bin"
+#endif
 MODULE_AUTHOR("Rockchips");
 MODULE_DESCRIPTION("Rockchips RK960 Wireless Lan Driver");
 MODULE_LICENSE("GPL");
@@ -44,6 +63,10 @@ MODULE_PARM_DESC(jtag_debug, "jtag debug");
 static int sdio_width = 4;
 module_param(sdio_width, int, 0644);
 MODULE_PARM_DESC(sdio_width, "sdio width");
+
+static u16 rk960_fw_dwst_hotboot = 0;
+module_param(rk960_fw_dwst_hotboot, ushort, 0644);
+MODULE_PARM_DESC(rk960_fw_dwst_hotboot, "rk960 fw download status and hotboot");
 
 static int sgi = 0;
 module_param(sgi, int, 0644);
@@ -60,6 +83,10 @@ MODULE_PARM_DESC(ht_support, "ht support");
 static int mcs_mask = 0xFF;
 module_param(mcs_mask, int, 0644);
 MODULE_PARM_DESC(mcs_mask, "mcs mask");
+
+/* WLAN_GPIO_INT */
+int rk_host_irq_gpio = -1;
+module_param(rk_host_irq_gpio, int, S_IRUGO);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 int rk960_vendor_init(struct wiphy *wiphy);
@@ -291,6 +318,13 @@ static const struct wiphy_wowlan_support uccp_wowlan_support = {
 	.flags = WIPHY_WOWLAN_ANY,
 };
 
+#if defined(RK960_FW_ERROR_RECOVERY) && defined(SUPPORT_RK962_POWERSAVE)
+struct eventfd_ctx *efd_ctx = NULL;
+static DEFINE_MUTEX(efd_lock); // Protect the mutex lock of efd_ctx
+static struct kobject *sysfs_kobj;
+void rk962_recovery_trigger(void);
+#endif
+
 int rk960_jtag_debug_enable(void)
 {
 	return jtag_debug;
@@ -343,6 +377,7 @@ void rk960_sdio_width_switch(struct rk960_common *hw_priv)
 
 void rk960_fw_error_work(struct work_struct *work)
 {
+	int err = -ENOMEM;
 	struct rk960_common *hw_priv =
 	    container_of(work, struct rk960_common, fw_err_work);
 	int wanted = hw_priv->wsm_caps.firmwareReady + 1;
@@ -350,11 +385,18 @@ void rk960_fw_error_work(struct work_struct *work)
 	if (!hw_priv->fw_error_enable)
 	        BUG_ON(1);
 
+#ifdef SUPPORT_RK962_POWERSAVE
 	// 1. reset rk960
+	rk962_recovery_trigger();
+	mdelay(100);
+#endif
+
+#ifdef RFKILL_RK
 	rockchip_wifi_power(0);
 	mdelay(10);
 	rockchip_wifi_power(1);
 	mdelay(50);
+#endif
 
 	rk960_sdio_recovery_init(hw_priv);
 
@@ -364,12 +406,17 @@ void rk960_fw_error_work(struct work_struct *work)
 	hw_priv->wsm_rx_seq = 0;
 	atomic_set(&hw_priv->evt_idx, 0);
 
-	rk960_download_fw(hw_priv, 1);
-
+	err = rk960_load_firmware(hw_priv, 1);
+	if(0 != err)
+	{
+		RK960_ERROR_FWREC("rk960_load_firmware failed !!!\n");
+		return;
+	}
 	hw_priv->wsm_tx_seq = 0;
 	hw_priv->hw_bufs_used = 0;
 	atomic_set(&hw_priv->msg_idx, 0);
 
+	rk960_free_firmware_buf(&hw_priv->firmware);
 	if (wait_event_interruptible_timeout(hw_priv->wsm_startup_done,
 					     hw_priv->wsm_caps.firmwareReady ==
 					     wanted, 2 * HZ) <= 0) {
@@ -438,6 +485,8 @@ void rk960_signal_fw_error(struct rk960_common *hw_priv, int reason)
 		rk960_pending_wsm_cmd(hw_priv);
 		rk960_queue_flush_pending_tx(hw_priv, -1);
 
+		hwbus_rcvbuf_init(hw_priv);
+
 		BUG_ON(hw_priv->fw_error_counter >= RK960_FWERR_SIZE);
 		idx = hw_priv->fw_error_counter;
 		hw_priv->fw_error_reason[idx] = reason;
@@ -455,6 +504,403 @@ void rk960_signal_fw_error(struct rk960_common *hw_priv, int reason)
 		}
 	}
 }
+
+#ifdef SUPPORT_RK962_POWERSAVE
+/* Write callback for sysfs property file */
+static ssize_t efd_store(struct kobject *kobj, struct kobj_attribute *attr,
+             const char *buf, size_t count)
+{
+    int ret;
+    unsigned int fd;
+    char kernel_buf[32];
+    struct eventfd_ctx *new_ctx;
+
+	RK960_INFO_FWREC("%s, line = %d\n",__func__, __LINE__);
+
+    if (count == 0 || count >= sizeof(kernel_buf))
+	{
+		RK960_ERROR_FWREC("%s, line = %d\n",__func__, __LINE__);
+        return -EINVAL;
+	}
+#if 1
+    ret = kstrtouint(buf, 10, &fd);
+    if (ret)
+        return ret;
+	RK960_INFO_FWREC("%s, line = %d, fd = %d\n",__func__, __LINE__, fd);
+#else
+	//int ret;
+    //char *endptr;
+
+    // Copy user data to the kernel buffer
+    ret = copy_from_user(kernel_buf, buf, count);
+	if (ret)
+	{
+		RK960_ERROR_FWREC("%s, line=%d, buf = %s, count=%d\n",__func__, __LINE__,buf, count);
+		RK960_ERROR_FWREC("%s, line=%d, ret = %d\n",__func__, __LINE__,ret);
+        return -EFAULT;
+	}
+    kernel_buf[count] = '\0'; // Ensure string termination
+	RK960_INFO_FWREC("%s, line = %d\n",__func__, __LINE__);
+
+    endptr = strchr(kernel_buf, '\n');
+    if (endptr)
+        *endptr = '\0';
+
+    // Convert to integer
+    ret = kstrtouint(kernel_buf, 10, &fd);
+    if (ret)
+	{
+		RK960_INFO_FWREC("%s, line = %d\n",__func__, __LINE__);
+        return ret;
+	}
+#endif
+    // Get eventfd context
+    new_ctx = eventfd_ctx_fdget(fd);
+    if (IS_ERR(new_ctx))
+	{
+		RK960_ERROR_FWREC("%s, line = %d\n",__func__, __LINE__);
+        return PTR_ERR(new_ctx);
+	}
+    // Replace old context
+    mutex_lock(&efd_lock);
+    if (efd_ctx)
+	{
+		RK960_INFO_FWREC("%s, line = %d\n",__func__, __LINE__);
+        eventfd_ctx_put(efd_ctx);
+	}
+    efd_ctx = new_ctx;
+    mutex_unlock(&efd_lock);
+
+    return count;
+}
+
+/* Define sysfs attributes */
+static struct kobj_attribute efd_attribute = __ATTR(efd_fd, 0200, NULL, efd_store);
+/* WiFi recovery trigger function */
+void rk962_recovery_trigger(void)
+{
+	RK960_INFO_FWREC("%s\n",__func__);
+    mutex_lock(&efd_lock);
+    if (efd_ctx) {
+        eventfd_signal(efd_ctx, RK962_RECOVERY_EVENTFD_VALUE);
+        RK960_INFO_FWREC("Sent eventfd signal value: 0x%x.\n", RK962_RECOVERY_EVENTFD_VALUE);
+    } else {
+        RK960_INFO_FWREC("No valid eventfd context.\n");
+    }
+    mutex_unlock(&efd_lock);
+}
+
+static int rk962_recovery_eventfd_init(void)
+{
+	RK960_INFO_FWREC("%s\n",__func__);
+    sysfs_kobj = kobject_create_and_add("eventfd_sysfs", kernel_kobj);
+    if (!sysfs_kobj)
+	{
+        return -ENOMEM;
+	}
+
+    // Create property file
+    if (sysfs_create_file(sysfs_kobj, &efd_attribute.attr))
+	{
+        RK960_ERROR_FWREC("Failed to create sysfs file.\n");
+        kobject_put(sysfs_kobj);
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+static void rk962_recovery_eventfd_exit(void)
+{
+	RK960_INFO_FWREC("%s\n",__func__);
+    mutex_lock(&efd_lock);
+    if (efd_ctx)
+        eventfd_ctx_put(efd_ctx);
+    mutex_unlock(&efd_lock);
+
+    sysfs_remove_file(sysfs_kobj, &efd_attribute.attr);
+    if (sysfs_kobj)
+	{
+        kobject_put(sysfs_kobj); //release kobject
+        sysfs_kobj = NULL;
+        RK960_INFO_FWREC("release kobject done!\n");
+	}
+}
+#endif
+#endif
+
+#ifdef SUPPORT_RK962_POWERSAVE
+#define WIFI_USER_CONFIG "/data/wifi_user.conf"
+unsigned char config_mac_address[ ETH_ALEN ] = {0};
+
+unsigned char* rk960_read_mac_addr_from_config(void) {
+    struct file *file;
+    //mm_segment_t old_fs;
+    loff_t pos = 0;
+    char *macPointer, *macEnd;
+    ssize_t read_bytes = 0;
+    ssize_t total_bytes = 0;
+	size_t  capacity = 4096;
+    char *buffer = kmalloc(capacity, GFP_KERNEL);
+	char mac_addr_string[ 3 * ETH_ALEN ] = {0};
+	int numScanned = 0;
+
+    if (!buffer) {
+	    return NULL;
+    }
+	memset(buffer, 0, capacity);
+
+	//switch to system kernel
+    //old_fs = get_fs();
+    //set_fs(KERNEL_DS);
+	
+    // open the file
+    file = filp_open(WIFI_USER_CONFIG, O_RDONLY, 0);
+    if (IS_ERR(file)) {
+        printk("### Read config: error opening file.");
+	    kfree(buffer);
+		buffer=NULL;
+		//set_fs(old_fs);
+	    return NULL;
+    }
+
+	// position
+	//pos = vfs_llseek(file, 0, SEEK_SET);
+	pos = 0;
+	
+    // read
+	while ((read_bytes = kernel_read(file, buffer + total_bytes, capacity - total_bytes, &pos)) > 0) {
+        total_bytes += read_bytes;
+		printk("Read config: file for mac addr, total_bytes = %d", total_bytes);
+    }
+
+    if (total_bytes <= 0 || total_bytes >= capacity) {
+        printk("### Read config: error reading file.");
+		goto release_read;
+    }
+
+    // Process the read data
+    macPointer = strstr(buffer, "mac_address=");
+
+	if (macPointer) 
+	{
+        macPointer += strlen("mac_address=");
+        macEnd = strchr(macPointer, '\n');
+        if (macEnd) {
+            *macEnd = '\0';
+            memcpy(mac_addr_string, macPointer, macEnd - macPointer);
+            mac_addr_string[macEnd - macPointer] = '\0';
+        } else {
+            strcpy(mac_addr_string, macPointer);
+        }
+
+		if (strcmp(mac_addr_string, "0") == 0) {
+			printk("### Read config: get config mac address is invaid.");
+            goto release_read;
+        }
+		
+		//string mac to 6 bytes, 11:22:33:44:55:66 -> 0x11 0x22 0x33 0x44 0x55 0x66
+	    // Read 6 hexadecimal digits from a string using sscanf
+	    numScanned = sscanf(mac_addr_string, "%2x:%2x:%2x:%2x:%2x:%2x",
+	                       (unsigned int *)&config_mac_address[0], 
+	                       (unsigned int *)&config_mac_address[1], 
+	                       (unsigned int *)&config_mac_address[2],
+	                       (unsigned int *)&config_mac_address[3], 
+	                       (unsigned int *)&config_mac_address[4], 
+	                       (unsigned int *)&config_mac_address[5]);
+
+	    // Check if 6 digits were successfully read
+	    if (numScanned != 6) {
+	        printk("### Read config: error parsing MAC address.");
+			goto release_read;
+	    }
+	
+	    kfree(buffer);
+		buffer=NULL;
+	    //set_fs(old_fs);
+	    filp_close(file, NULL);
+
+		printk("Read config: get config mac address ok.");
+        return config_mac_address;
+    }
+	else 
+	{
+		printk("Read config: No found key of 'mac_address=' in config.");
+	}
+
+
+release_read:	
+    kfree(buffer);
+	buffer=NULL;
+    //set_fs(old_fs);
+    filp_close(file, NULL);
+    return NULL;
+}
+
+void rk960_write_mac_addr_to_config(unsigned char *mac) {
+    struct file *file;
+    //mm_segment_t old_fs;
+    loff_t pos = 0;
+    char *macPointer, *macEnd;
+    ssize_t read_bytes = 0;
+    ssize_t total_bytes = 0;
+	size_t  capacity = 4096;
+    char *buffer = kmalloc(capacity, GFP_KERNEL);
+    char new_line[256] = {0};
+	int old_mac_len = 0;
+	int new_mac_len = 0;
+	int tail_len = 0;
+	ssize_t write_bytes = 0;
+	ssize_t total_written = 0;
+	char mac_addr_string[ 3 * ETH_ALEN ] = {0};
+	int numPrinted = 0;
+
+    if (!buffer) {
+	    return;
+    }
+	memset(buffer, 0, capacity);
+
+	//switch to system kernel
+    //old_fs = get_fs();
+    //set_fs(KERNEL_DS);
+
+    // open file
+    file = filp_open(WIFI_USER_CONFIG, O_RDONLY, 0);
+    if (IS_ERR(file)) {
+        printk("### Write config: error opening file.");
+	    kfree(buffer);
+		buffer=NULL;
+		//set_fs(old_fs);
+	    return;
+    }
+
+	//6 bytes tp string mac , 0x11 0x22 0x33 0x44 0x55 0x66 -> 11:22:33:44:55:66
+    // Format MAC address as a string using sprintf
+    numPrinted = sprintf(mac_addr_string, "%02x:%02x:%02x:%02x:%02x:%02x",
+                         mac[0], mac[1], mac[2],
+                         mac[3], mac[4], mac[5]);
+
+	new_mac_len = strlen(mac_addr_string);
+
+    // Check if 17 characters were successfully printed
+    if (numPrinted == 17) {
+        printk("Write config: MAC address as string: %s, new_mac_len: %d", mac_addr_string, new_mac_len);
+    } else {
+        printk("### Write config: error formatting MAC address.");
+	    goto release_write;
+    }
+
+	//pos = vfs_llseek(file, 0, SEEK_SET);
+	pos = 0;
+
+    // read
+	while ((read_bytes = kernel_read(file, buffer + total_bytes, capacity - total_bytes, &pos)) > 0) {
+        total_bytes += read_bytes; 
+		printk("Write config: get config file init data, total_bytes = %d", total_bytes);
+    }
+	
+    if (total_bytes <= 0 || total_bytes >= capacity) {
+        printk("### write config: error reading file.");
+		goto release_write;
+    }
+
+    // Process the read data
+    macPointer = strstr(buffer, "mac_address=");
+    if (macPointer) {
+        macPointer += strlen("mac_address=");
+        macEnd = strchr(macPointer, '\n');
+		if (macEnd) {
+			char *temp = NULL;
+			
+			old_mac_len = macEnd - macPointer;
+			tail_len = total_bytes - (macEnd - buffer) - 1;
+			printk("Write config: old_mac_len = %d, tail_len = %d", old_mac_len, tail_len);
+
+			temp = kmalloc(tail_len + 1, GFP_KERNEL);
+			memcpy(temp, macEnd + 1, tail_len);
+
+			//clear
+			memset(macEnd + 1, 0, tail_len);
+			
+			//update new mac in the buff, part 2
+			strcpy(new_line, mac_addr_string);
+			strcat(new_line, "\n");
+			memcpy(macPointer, new_line, new_mac_len + 1);
+
+			//buffer part 3
+			memcpy(macEnd + 1 + (new_mac_len - old_mac_len), temp, tail_len);
+			kfree(temp);
+			temp=NULL;
+			
+			total_bytes += (new_mac_len - old_mac_len);
+
+        } else {
+			printk("### write config: config file is error.");
+            goto release_write;
+        }
+    }
+	else {
+
+		printk("Write config: No found key of 'mac_address=' in config, add new line in the tail.");
+		strcpy(new_line, "mac_address=");
+		strcat(new_line, mac_addr_string);
+		strcat(new_line, "\n");
+
+		memcpy(buffer + total_bytes, new_line, strlen(new_line));
+		total_bytes += strlen(new_line);
+	}
+
+	printk("Write config: after process, total_bytes = %d", total_bytes);
+	
+	//end of file
+	buffer[total_bytes] = '\0';
+
+	//set_fs(old_fs);	
+	filp_close(file, NULL);
+	ssleep(1);
+
+    // Reopen the file and clear it
+	file = filp_open(WIFI_USER_CONFIG, O_WRONLY | O_TRUNC, 0);
+    if (IS_ERR(file)) {
+        printk("### Write config: error re-opening file.");	
+		//vfs_fsync(file, 0); //fflush
+        //goto release_write;
+		kfree(buffer);
+		buffer=NULL;
+		//set_fs(old_fs);	
+		return;
+    }
+   
+	//fflush
+	vfs_fsync(file, 0);
+
+	//position
+	pos = 0;
+	total_written  = 0;
+	write_bytes = 0;
+
+	// Write data
+    while (total_written < total_bytes) {
+        write_bytes = kernel_write(file, buffer + total_written, total_bytes - total_written, &pos);
+        if (write_bytes < 0) {
+            printk("### Write config: part data failed to write to file.");
+            break;
+        }
+        total_written += write_bytes;
+    }
+
+	printk("Write config: finish, total_written = %d", total_written);
+
+	//fflush
+	vfs_fsync(file, 0);
+
+release_write:	
+    kfree(buffer);
+	buffer=NULL;
+	//set_fs(old_fs);	
+    filp_close(file, NULL);
+    return;
+}
 #endif
 
 #define Rk960_WIFI_MAC_ADDR_FROM_VENDOR_STORAGE
@@ -462,27 +908,48 @@ void rk960_init_mac_addr(struct rk960_common *hw_priv, int init)
 {
 	int i;
 
-        if (init) {
-        	// 1. check mac addr from wifi efuse
-        	if (is_valid_ether_addr(hw_priv->wifi_efuse_mac_addr)) {
-        		RK960_INFO_MAIN("wifi mac addr from efuse\n");
-        		memcpy(hw_priv->vif_macs[0],
-                                hw_priv->wifi_efuse_mac_addr, ETH_ALEN);
-        	} else {
-        		// 2. check mac addr from host vendor storage
-        		if (rockchip_wifi_mac_addr(hw_priv->vif_macs[0])
-                                != 0) {
-        			RK960_INFO_MAIN("rockchip_wifi_mac_addr"
-                                        " failed!\n");
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+    if (init) {
+    	// 1. check mac addr from wifi efuse
+    	if (is_valid_ether_addr(hw_priv->wifi_efuse_mac_addr)) {
+    		RK960_INFO_MAIN("wifi mac addr from efuse\n");
+    		memcpy(hw_priv->vif_macs[0],
+                            hw_priv->wifi_efuse_mac_addr, ETH_ALEN);
+    	} else {
+#ifdef RFKILL_RK
+    		// 2. check mac addr from host vendor storage
+    		if (rockchip_wifi_mac_addr(hw_priv->vif_macs[0]) != 0) {
+#ifdef SUPPORT_RK962_POWERSAVE
+			unsigned char * config_mac = NULL;
+    			RK960_INFO_MAIN("rockchip_wifi_mac_addr get from efuse failed!\n");
+
+			config_mac = rk960_read_mac_addr_from_config();
+
+			if (config_mac == NULL) {
+				//random_ether_addr(hw_priv->vif_macs[0]);
 				eth_random_addr(hw_priv->vif_macs[0]);
+				RK960_INFO_MAIN("wifi mac addr from random: %pM\n", hw_priv->vif_macs[0]);
+
+				if (is_valid_ether_addr(hw_priv->vif_macs[0])) {	
+						RK960_INFO_MAIN("write random mac addr to config and as fixed mac addr.\n");
+						rk960_write_mac_addr_to_config(hw_priv->vif_macs[0]);
+				}					
+			} else {
+				if (is_valid_ether_addr(config_mac)) {						
+					memcpy(hw_priv->vif_macs[0], config_mac, strlen(config_mac));
+					RK960_INFO_MAIN("wifi mac addr from config: %pM\n", hw_priv->vif_macs[0]);
+				}
+			}
 #else
-        			random_ether_addr(hw_priv->vif_macs[0]);
+			//random_ether_addr(hw_priv->vif_macs[0]);
+			eth_random_addr(hw_priv->vif_macs[0]);
+			RK960_INFO_MAIN("wifi mac addr from random: %pM\n", hw_priv->vif_macs[0]);
 #endif
-        		}
-        	}
-        }
+    		}
+#endif
+    	}
+    }
 	memcpy(hw_priv->vif_macs[1], hw_priv->vif_macs[0], ETH_ALEN);
+
 #if 0
 	/* Set the Locally Administered bit */
 	vif_macs[1][0] |= 0x02;
@@ -766,6 +1233,10 @@ struct ieee80211_hw *rk960_init_common(size_t hw_priv_data_len)
 	INIT_WORK(&hw_priv->fw_err_work, rk960_fw_error_work);
 	wsm_sended_cmds_init(hw_priv);
 
+#ifdef SUPPORT_RK962_POWERSAVE
+    INIT_DELAYED_WORK(&hw_priv->keepalive_timeout, rk960_templateframe_higeneric_work);
+    INIT_DELAYED_WORK(&hw_priv->rk960_wpa_sm_timeout, rk960_wpa_sm_work);
+#endif
 #ifdef SUPPORT_FWCR
         INIT_WORK(&hw_priv->fwcr_work, rk960_fwcr_work);
         init_waitqueue_head(&hw_priv->fwcr_resume_done);
@@ -1018,6 +1489,9 @@ int rk960_core_probe(const struct hwbus_ops *hwbus_ops,
 		.disableMoreFlagUsage = true,
 	};
 	int wait_time = 3;
+#ifdef SUPPORT_FWCR
+	u8 quzz_ko_buf[32], cnt;
+#endif
 #ifdef CUSTOM_FEATURE		/* To control ps mode */
 	char buffer[2];
 	savedpsm = mode.power_mode;
@@ -1079,7 +1553,11 @@ int rk960_core_probe(const struct hwbus_ops *hwbus_ops,
 	if (jtag_debug) {
 		wait_time = 600;
 	} else {
-		err = rk960_load_firmware(hw_priv);
+		err = rk960_load_firmware(hw_priv, 0);
+		if(0 == err)
+			rk960_fw_dwst_hotboot &= 0x00ff;
+		else
+			rk960_fw_dwst_hotboot |= 0x1 << 8;
 		if (err)
 			goto err2;
 	}
@@ -1090,6 +1568,7 @@ int rk960_core_probe(const struct hwbus_ops *hwbus_ops,
 
         if (!hw_priv->fw_hotboot)
                 rk960_start_fw(hw_priv);
+    rk960_free_firmware_buf(&hw_priv->firmware);
 
 	/*hw_priv->hwbus_ops->lock(hw_priv->hwbus_priv);
 	   WARN_ON(hw_priv->hwbus_ops->set_block_size(hw_priv->hwbus_priv,
@@ -1106,6 +1585,19 @@ int rk960_core_probe(const struct hwbus_ops *hwbus_ops,
                         rk960_tx_max_agg_num_tbl, 8);
 
 #ifdef SUPPORT_FWCR
+	if (!hw_priv->fw_hotboot) {
+		rk960_fw_dwst_hotboot &= 0xff00;
+	} else {
+		rk960_fw_dwst_hotboot |= 0x1 << 0;
+		#if 1 /* dump snonce */
+		rk960_access_file(FASTLINK_SNONCE_PATH, quzz_ko_buf, 32, 1);
+		for(cnt = 0; cnt < 32; cnt += 8)
+			RK960_INFO_TXRX("SNONCE: %x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt], quzz_ko_buf[cnt+1], quzz_ko_buf[cnt+2], quzz_ko_buf[cnt+3],
+					quzz_ko_buf[cnt+4], quzz_ko_buf[cnt+5], quzz_ko_buf[cnt+6], quzz_ko_buf[cnt+7]);
+		#endif
+	}
+	RK960_INFO_MAIN("%s: rk960_fw_dwst_hotboot 0x%x.\n", __func__, rk960_fw_dwst_hotboot);
+
         rk960_fwcr_init(hw_priv);
         if (hw_priv->fw_hotboot) {
                 rk960_fwcr_read(hw_priv);
@@ -1161,15 +1653,19 @@ int rk960_core_probe(const struct hwbus_ops *hwbus_ops,
 		}
 	} else {
 #ifdef SUPPORT_FWCR
-                rk960_init_mac_addr(hw_priv, 0);
+        rk960_init_mac_addr(hw_priv, 0);
+        rk960_sdio_width_switch(hw_priv);
 #endif
-        }
+    }
 
 	err = rk960_register_common(dev);
 	if (err) {
 		//hw_priv->sbus_ops->hwbus_ops(hw_priv->hwbus_priv);
 		goto err3;
 	}
+#if defined(RK960_FW_ERROR_RECOVERY) && defined(SUPPORT_RK962_POWERSAVE)
+	rk962_recovery_eventfd_init();
+#endif
 #ifdef RK960_SDIO_RX_TP_TEST
 	wsm_set_sdio_rx_tp_test(hw_priv, 1, 0);
 	return err;
@@ -1209,6 +1705,9 @@ void rk960_core_release(struct rk960_common *self)
 	//__rk960_notify_device_pwrdown(self);
 
 	rk960_free_common(self->hw);
+#if defined(RK960_FW_ERROR_RECOVERY) && defined(SUPPORT_RK962_POWERSAVE)
+	rk962_recovery_eventfd_exit();
+#endif
 	return;
 }
 
