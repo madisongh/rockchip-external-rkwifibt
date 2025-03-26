@@ -258,8 +258,8 @@ start_wifibt()
 	case "$1" in
 		start | restart)
 			echo "Starting Wi-Fi/BT..."
-			start_wifi
 			start_bt
+			start_wifi
 			echo "Done"
 			;;
 		start_wifi)
