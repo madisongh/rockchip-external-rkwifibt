@@ -4,6 +4,36 @@ WIFI_FILE="/var/run/.wifi-interfaces"
 BT_FILE="/var/run/.bt-state"
 RELOAD_FILE="/var/run/.wifibt-reload"
 
+bt_set_disabled()
+{
+	rm -f "$BT_FILE"
+}
+
+bt_is_disabled()
+{
+	[ ! -r "$BT_FILE" ]
+}
+
+bt_set_enabled()
+{
+	echo enable > "$BT_FILE"
+}
+
+bt_is_enabled()
+{
+	[ -r "$BT_FILE" ] && grep -wq enable "$BT_FILE"
+}
+
+bt_set_suspended()
+{
+	echo suspend > "$BT_FILE"
+}
+
+bt_is_suspended()
+{
+	[ -r "$BT_FILE" ] && grep -wq suspend "$BT_FILE"
+}
+
 # usage: do_insmod <module> [sleep:<time>] [options]
 do_insmod()
 {
@@ -129,7 +159,7 @@ init_bt_rtk_usb()
 	do_insmod rtk_btusb
 
 	# Wait for BT disabled
-	while [ -r "$BT_FILE" ]; do
+	while ! bt_is_disabled; do
 		sleep 1
 	done
 }
@@ -171,14 +201,15 @@ do_init_bt()
 
 init_bt()
 {
-	echo enable > "$BT_FILE"
+	# Mark enabled
+	bt_set_enabled
 
 	# BT guardian
 	{
 		# Keep BT alive when enabled
-		while [ -r "$BT_FILE" ]; do
+		while ! bt_is_disabled; do
 			# BT suspended
-			if grep -wq suspended "$BT_FILE"; then
+			if bt_is_suspended; then
 				sleep .5
 				continue
 			fi
@@ -193,6 +224,17 @@ init_bt()
 
 start_bt()
 {
+	# Ignore start request while suspending
+	if bt_is_suspended; then
+		echo "BT is suspended..."
+		return 1
+	fi
+
+	# BT guardian is running?
+	if bt_is_enabled; then
+		wait_bt || true
+	fi
+
 	if bt_ready; then
 		echo "BT is already inited..."
 		return 0
@@ -200,7 +242,7 @@ start_bt()
 
 	if ! init_bt; then
 		echo "Failed to init BT for $WIFIBT_CHIP!"
-		rm -rf "$BT_FILE"
+		bt_set_disabled
 		return 1
 	fi
 
@@ -299,7 +341,7 @@ stop_wifibt()
 	rm -rf "$WIFI_FILE"
 	stop_wifi
 
-	rm -rf "$BT_FILE"
+	bt_set_disabled
 	stop_bt
 	echo "Done"
 }
@@ -357,8 +399,8 @@ reload_wifibt()
 suspend_wifibt()
 {
 	# Mark BT suspended
-	if [ -r "$BT_FILE" ]; then
-		echo suspended > "$BT_FILE"
+	if ! bt_is_disabled; then
+		bt_set_suspended
 
 		# Restart BT later in resume, since it might lose power during S2R
 		stop_bt
@@ -382,11 +424,11 @@ resume_wifibt()
 	# Retore enabled Wi-Fi interfaces
 	enable_wifi
 
-	if [ -r "$BT_FILE" ]; then
+	if ! bt_is_disabled; then
 		echo "Enabling BT..."
 
 		# Kick the BT guardian to re-init it
-		echo "enable" > "$BT_FILE"
+		bt_set_enabled
 	fi
 }
 
