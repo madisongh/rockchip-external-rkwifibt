@@ -260,7 +260,8 @@ struct rk960_start_stop_tsm {
 };
 #endif /* CONFIG_RK960_TESTMODE */
 
-#define RK960_FW_ERROR_RECOVERY
+/* #define RK960_FW_ERROR_RECOVERY */
+
 #define RK960_FWERR_REASON_TEST         0
 #define RK960_FWERR_REASON_TX_CONF      1
 #define RK960_FWERR_REASON_SDIO         2
