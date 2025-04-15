@@ -349,12 +349,12 @@ void _phy_lc_calibrate_8821c(struct dm_struct *dm)
 #endif
 #if 1
 	u32 lc_cal = 0, cnt = 0, tmp0xc00;
+
+	aac_check_8821c(dm);
 	/*RF to standby mode*/
 	tmp0xc00 = odm_read_4byte(dm, 0xc00);
 	odm_write_4byte(dm, 0xc00, 0x4);
 	odm_set_rf_reg(dm, RF_PATH_A, RF_0x0, RFREGOFFSETMASK, 0x10000);
-
-	_phy_aac_calibrate_8821c(dm);
 
 	/*backup RF0x18*/
 	lc_cal = odm_get_rf_reg(dm, RF_PATH_A, RF_CHNLBW, RFREGOFFSETMASK);
@@ -377,8 +377,8 @@ void _phy_lc_calibrate_8821c(struct dm_struct *dm)
 #endif
 }
 
-/*LCK:0x3*/
-/*1. full LCK*/
+/*LCK:0x4*/
+/*1. AACK check + full LCK*/
 void phy_lc_calibrate_8821c(void *dm_void)
 {
 	struct dm_struct *dm = (struct dm_struct *)dm_void;

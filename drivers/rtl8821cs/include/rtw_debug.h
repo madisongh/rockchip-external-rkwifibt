@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2007 - 2019 Realtek Corporation.
+ * Copyright(c) 2007 - 2021 Realtek Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -117,7 +117,7 @@ extern uint rtw_drv_log_level;
 
 #ifdef DBG_CPU_INFO
 #define CPU_INFO_FMT	"[%u] "
-#define CPU_INFO_ARG	get_cpu()
+#define CPU_INFO_ARG	task_cpu(current)
 #else /* !DBG_CPU_INFO */
 #define CPU_INFO_FMT	"%s"
 #define CPU_INFO_ARG	""

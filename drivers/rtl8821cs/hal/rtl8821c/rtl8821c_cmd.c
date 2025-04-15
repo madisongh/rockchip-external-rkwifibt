@@ -235,7 +235,7 @@ void _rtl8821c_set_FwPwrMode_cmd(PADAPTER adapter, u8 psmode, u8 rfon_ctrl)
 	}
 #endif
 
-	RTW_INFO("%s=> psmode:%02x, smart_ps:%02x, PowerState:%02x\n", __func__, psmode, smart_ps, PowerState);
+	/*RTW_INFO("%s=> psmode:%02x, smart_ps:%02x, PowerState:%02x\n", __func__, psmode, smart_ps, PowerState);*/
 
 #ifdef CONFIG_BT_COEXIST
 	rtw_btcoex_RecordPwrMode(adapter, h2c + 1, RTW_HALMAC_H2C_MAX_SIZE - 1);
@@ -459,6 +459,7 @@ static inline u8 is_c2h_id_handle_directly(u8 c2h_id, u8 c2h_sub_cmd_id)
 	#ifdef CONFIG_MCC_MODE
 	case C2H_MCC:
 	#endif
+	case C2H_TX_PAUSE_RPT:
 	case C2H_LPS_STATUS_RPT:
 		return _TRUE;
 	default:

@@ -184,6 +184,7 @@ do {\
 #define REG_CCK_CHECK			0x0454
 #define REG_AMPDU_MAX_TIME_V1	0x0455
 #define REG_TX_HANG_CTRL		0x045E
+#define REG_TX_HANG_CTRL_OPT		0x04FC
 #define REG_LIFETIME_EN			0x0426
 #define REG_BT_COEX_TABLE0		0x06C0
 #define REG_BT_COEX_TABLE1		0x06C4
@@ -194,6 +195,7 @@ do {\
 #define REG_BT_STAT_CTRL		0x0778
 
 #define BIT_EN_GNT_BT_AWAKE	BIT(3)
+#define BIT_GNT_BT_OPT		BIT(0)
 #define BIT_EN_BCN_FUNCTION	BIT(3)
 #define BIT_EN_BCN_PKT_REL	BIT(6)
 #define BIT_FEN_BB_GLB_RST	BIT(1)
@@ -244,6 +246,7 @@ typedef enum _BTC_CHIP_TYPE {
 	BTC_CHIP_RTL8703B 		= 11,
 	BTC_CHIP_RTL8725A 		= 12,
 	BTC_CHIP_RTL8723F 		= 13,
+	BTC_CHIP_RTL8822E		= 14,
 	BTC_CHIP_MAX
 } BTC_CHIP_TYPE, *PBTC_CHIP_TYPE;
 
@@ -463,7 +466,9 @@ enum btc_wl2bt_scoreboard {
 	BTC_SCBD_EXTFEM		= BIT(8),
 	BTC_SCBD_TDMA		= BIT(9),
 	BTC_SCBD_FIX2M		= BIT(10),
+	BTC_SCBD_BT_HILNA	= BIT(13),
 	BTC_SCBD_MAILBOX_DBG	= BIT(14),
+	BTC_SCBD_WLS1		= BIT(15),
 	BTC_SCBD_ALL		= 0xffff,
 	BTC_SCBD_ALL_32BIT	= 0xffffffff
 };
@@ -798,6 +803,7 @@ struct btc_coex_sta {
 	boolean bt_ctr_ok;
 
 	boolean wl_under_lps;
+	boolean wl_in_lps_enter;
 	boolean wl_under_ips;
 	boolean wl_under_4way;
 	boolean	wl_hi_pri_task1;
@@ -873,10 +879,11 @@ struct btc_coex_sta {
 	u32	score_board_WB;
 	u16	bt_reg_vendor_ac;
 	u16	bt_reg_vendor_ae;
-	u32	bt_reg_vendor_dac;
+	u16	bt_reg_vendor_dae;
 	u16	bt_reg_modem_a;
 	u16	bt_reg_rf_2;
 	u16	bt_reg_rf_9;
+	u16	bt_reg_le_200;
 	u16	wl_txlimit;
 
 	u32	score_board_BW_32bit;
@@ -928,6 +935,7 @@ struct btc_wifi_link_info_ext {
 	boolean is_4way;
 	boolean is_32k;
 	boolean is_connected;
+	boolean is_port_num_change;
 	u8	num_of_active_port;
 	u32	port_connect_status;
 	u32	traffic_dir;
@@ -1206,6 +1214,8 @@ typedef enum _BTC_NOTIFY_TYPE_IPS {
 typedef enum _BTC_NOTIFY_TYPE_LPS {
 	BTC_LPS_DISABLE							= 0x0,
 	BTC_LPS_ENABLE							= 0x1,
+	BTC_LPS_PRE							= 0x2,
+	BTC_LPS_RET							= 0x3,
 	BTC_LPS_MAX
 } BTC_NOTIFY_TYPE_LPS, *PBTC_NOTIFY_TYPE_LPS;
 typedef enum _BTC_NOTIFY_TYPE_SCAN {

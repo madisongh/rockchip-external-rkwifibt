@@ -203,7 +203,7 @@ tx_allowed_sdio_8821c(struct halmac_adapter *adapter, u8 *buf, u32 size)
 			status = chk_oqt_8821c(adapter, tx_agg_num, buf,
 					       macid_cnt);
 			if (status != HALMAC_RET_SUCCESS) {
-				PLTFM_MSG_WARN("[WARN]oqt buffer full!!\n");
+				PLTFM_MSG_WARN("[WARN]oqt buffer full, cnt = %d\n", cnt);
 				return status;
 			}
 
@@ -609,14 +609,13 @@ chk_oqt_8821c(struct halmac_adapter *adapter, u32 tx_agg_num, u8 *buf,
 
 		cnt = 10;
 		do {
-			if (fs_info->ac_empty >= macid_cnt) {
+			if (fs_info->ac_oqt_num == OQT_ENTRY_AC_8821C &&
+			    fs_info->ac_empty >= macid_cnt) {
 				fs_info->ac_empty -= macid_cnt;
 				break;
-			}
-
-			if (fs_info->ac_oqt_num >= tx_agg_num) {
+			} else if (fs_info->ac_oqt_num >= (tx_agg_num << 1)) {
 				fs_info->ac_empty = 0;
-				fs_info->ac_oqt_num -= (u8)tx_agg_num;
+				fs_info->ac_oqt_num = 0;
 				break;
 			}
 
