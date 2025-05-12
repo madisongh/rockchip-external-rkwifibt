@@ -4303,6 +4303,7 @@ static void hw_var_set_opmode(PADAPTER padapter, u8 variable, u8 *val)
 	u8 val8;
 	u8 mode = *((u8 *)val);
 	static u8 isMonitor = _FALSE;
+	u32 tsf_offset = 0x7fff; /* max +32767 (~32ms) */
 
 	HAL_DATA_TYPE			*pHalData = GET_HAL_DATA(padapter);
 
@@ -4403,7 +4404,8 @@ static void hw_var_set_opmode(PADAPTER padapter, u8 variable, u8 *val)
 			/* rtw_write8(padapter, REG_BCN_MAX_ERR, 0xFF); */
 			rtw_write8(padapter, REG_ATIMWND_1, 0x0c); /* 13ms for port1 */
 
-			rtw_write16(padapter, REG_TSFTR_SYN_OFFSET, 0x7fff);/* +32767 (~32ms) */
+			tsf_offset = rtw_hal_get_rand_tsf_offset(tsf_offset, 100);
+			rtw_write16(padapter, REG_TSFTR_SYN_OFFSET, tsf_offset);
 
 			/* reset TSF2 */
 			rtw_write8(padapter, REG_DUAL_TSF_RST, BIT(1));
@@ -4509,7 +4511,8 @@ static void hw_var_set_opmode(PADAPTER padapter, u8 variable, u8 *val)
 			/* rtw_write8(padapter, REG_BCN_MAX_ERR, 0xFF); */
 			rtw_write8(padapter, REG_ATIMWND, 0x0c); /* 13ms */
 
-			rtw_write16(padapter, REG_TSFTR_SYN_OFFSET, 0x7fff);/* +32767 (~32ms) */
+			tsf_offset = rtw_hal_get_rand_tsf_offset(tsf_offset, 100);
+			rtw_write16(padapter, REG_TSFTR_SYN_OFFSET, tsf_offset);
 
 			/* reset TSF */
 			rtw_write8(padapter, REG_DUAL_TSF_RST, BIT(0));
@@ -4612,28 +4615,12 @@ u8 SetHwReg8723D(PADAPTER padapter, u8 variable, u8 *val)
 		break;
 
 	case HW_VAR_RESP_SIFS:
-#if 0
-		/* SIFS for OFDM Data ACK */
-		rtw_write8(padapter, REG_SIFS_CTX + 1, val[0]);
-		/* SIFS for OFDM consecutive tx like CTS data! */
-		rtw_write8(padapter, REG_SIFS_TRX + 1, val[1]);
-
-		rtw_write8(padapter, REG_SPEC_SIFS + 1, val[0]);
-		rtw_write8(padapter, REG_MAC_SPEC_SIFS + 1, val[0]);
-
-		/* 20100719 Joseph: Revise SIFS setting due to Hardware register definition change. */
-		rtw_write8(padapter, REG_R2T_SIFS + 1, val[0]);
-		rtw_write8(padapter, REG_T2T_SIFS + 1, val[0]);
-
-#else
-		/* SIFS_Timer = 0x0a0a0808; */
-		/* RESP_SIFS for CCK */
-		rtw_write8(padapter, REG_RESP_SIFS_CCK, val[0]); /* SIFS_T2T_CCK (0x08) */
-		rtw_write8(padapter, REG_RESP_SIFS_CCK + 1, val[1]); /* SIFS_R2T_CCK(0x08) */
-		/* RESP_SIFS for OFDM */
-		rtw_write8(padapter, REG_RESP_SIFS_OFDM, val[2]); /* SIFS_T2T_OFDM (0x0a) */
-		rtw_write8(padapter, REG_RESP_SIFS_OFDM + 1, val[3]); /* SIFS_R2T_OFDM(0x0a) */
-#endif
+		#ifdef RTW_SIFS_IOT_BY_CORE
+		/*
+		* set IOT value here or restore to default value:
+		* hal_data->init_reg_0x428, init_reg_0x514, init_reg_0x63a, init_reg_0x63c
+		*/
+		#endif
 		break;
 
 	case HW_VAR_ACK_PREAMBLE: {

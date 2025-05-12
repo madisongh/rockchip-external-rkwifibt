@@ -1125,6 +1125,10 @@ void	rtw_hal_dm_watchdog(_adapter *padapter)
 
 	rtw_hal_turbo_edca(padapter);
 	padapter->hal_func.hal_dm_watchdog(padapter);
+
+#ifdef CONFIG_TSF_SYNC_DRV_TRIGGER
+	correct_TSF(padapter, MLME_ACTION_NONE);
+#endif
 }
 
 #ifdef CONFIG_LPS_LCLK_WD_TIMER

@@ -3443,6 +3443,46 @@ static void rtw_hal_tsf_update_restore(_adapter *adapter)
 #endif
 }
 
+static bool rtw_hal_tsf_update_restore_done(_adapter *adapter)
+{
+#ifdef CONFIG_MI_WITH_MBSSID_CAM
+	return true;
+#elif defined(CONFIG_TSF_SYNC_DRV_TRIGGER)
+	struct dvobj_priv *dvobj = adapter_to_dvobj(adapter);
+	_adapter *iface;
+	int i;
+
+	for (i = 0; i < dvobj->iface_nums; i++) {
+		iface = dvobj->padapters[i];
+		if (!iface)
+			continue;
+
+		if (iface->mlmeextpriv.tsf_update_required && iface->mlmeextpriv.en_hw_update_tsf) {
+			#ifdef DBG_TSF_UPDATE
+			RTW_INFO("port%d("ADPT_FMT") wait for TSF update enabled...\n"
+				, iface->hw_port, ADPT_ARG(iface));
+			#endif
+			break;
+		}
+	}
+
+	return i >= dvobj->iface_nums;
+#else
+	return true;
+#endif
+}
+
+void rtw_hal_wait_tsf_update_restore_done(_adapter *adapter, u32 timeout_ms)
+{
+	systime start = rtw_get_current_time();
+
+	while (!rtw_hal_tsf_update_restore_done(adapter)) {
+		if (timeout_ms && rtw_get_passing_time_ms(start) >= timeout_ms)
+			break;
+		rtw_msleep_os(10);
+	}
+}
+
 void rtw_hal_periodic_tsf_update_chk(_adapter *adapter)
 {
 #ifdef CONFIG_MI_WITH_MBSSID_CAM
@@ -12118,8 +12158,17 @@ static void _rtw_hal_set_fw_rsvd_page(_adapter *adapter, bool finished, u8 *page
 	BufIndex = TxDescOffset;
 
 	/*======== beacon content =======*/
-	rtw_hal_construct_beacon(adapter,
-				 &ReservedPagePacket[BufIndex], &BeaconLength);
+	if (MLME_IS_STA(adapter) && DEV_AP_NUM(adapter_to_dvobj(adapter))) {
+		/* AP mode start before STA mode connect to AP, so use AP mode to construct beacon content */
+		_adapter *ap_iface;
+		ap_iface = rtw_mi_get_ap_adapter(adapter);
+		RTW_INFO("Use AP mode to construct beacon content\n");
+		rtw_hal_construct_beacon(ap_iface,
+					 &ReservedPagePacket[BufIndex], &BeaconLength);
+	} else {
+		rtw_hal_construct_beacon(adapter,
+					 &ReservedPagePacket[BufIndex], &BeaconLength);
+	}
 
 	/*
 	* When we count the first page size, we need to reserve description size for the RSVD
@@ -12701,8 +12750,10 @@ static void hw_var_set_mlme_join(_adapter *adapter, u8 type)
 		if (rtw_mi_get_ap_num(adapter) || rtw_mi_get_mesh_num(adapter)) {
 			ResumeTxBeacon(adapter);
 
+			#ifndef CONFIG_TSF_SYNC_DRV_TRIGGER
 			/* reset TSF 1/2 after ResumeTxBeacon */
 			rtw_write8(adapter, REG_DUAL_TSF_RST, BIT(1) | BIT(0));
+			#endif
 		}
 
 	} else if (type == 2) {
@@ -12716,8 +12767,10 @@ static void hw_var_set_mlme_join(_adapter *adapter, u8 type)
 		if (rtw_mi_get_ap_num(adapter) || rtw_mi_get_mesh_num(adapter)) {
 			ResumeTxBeacon(adapter);
 
+			#ifndef CONFIG_TSF_SYNC_DRV_TRIGGER
 			/* reset TSF 1/2 after ResumeTxBeacon */
 			rtw_write8(adapter, REG_DUAL_TSF_RST, BIT(1) | BIT(0));
+			#endif
 		}
 	}
 
@@ -12793,6 +12846,43 @@ int rtw_hal_reset_tsf(_adapter *adapter, u8 reset_port)
 	return (loop_cnt >= 10) ? _FAIL : _SUCCESS;
 }
 #endif /* CONFIG_TSF_RESET_OFFLOAD */
+
+u32 rtw_hal_get_rand_tsf_offset(u32 hal_max_offset, u32 bcn_int)
+{
+#define TU 1024 /* 1 TU equals 1024 microseconds */
+	u32 bcn_int_us = bcn_int * TU;
+	u32 max_offset;
+	u32 base, range;
+	u32 offset, rand;
+
+	max_offset = hal_max_offset > bcn_int_us ? bcn_int_us : hal_max_offset;
+	if (max_offset >= bcn_int_us * 3 / 4) {
+		base = bcn_int_us / 2;
+		range = bcn_int_us / 4;
+	} else {
+		base = max_offset * 3 / 4;
+		range = max_offset / 4;
+	}
+
+	offset = base;
+	rand = rtw_random32() % (2 * range + 1);
+	if (rand != 0) {
+		if (rand > range)
+			offset -= (rand - range);
+		else
+			offset += rand;
+	}
+
+	RTW_INFO("%s hal_max:%u, bcn_int:%u base:%u range:%u offset:%u\n"
+		, __func__, hal_max_offset, bcn_int, base, range, offset);
+
+	if (offset > hal_max_offset) {
+		offset = hal_max_offset;
+		rtw_warn_on(1);
+	}
+
+	return offset;
+}
 
 #ifndef CONFIG_HAS_HW_VAR_CORRECT_TSF
 #ifdef CONFIG_HW_P0_TSF_SYNC
@@ -13039,6 +13129,125 @@ static void hw_var_set_correct_tsf(_adapter *adapter, u8 mlme_state)
 	/*do nothing*/
 }
 #else /* !CONFIG_MI_WITH_MBSSID_CAM*/
+static void rtw_hal_tsf_sync(_adapter *adapter, u8 dst_port)
+{
+	u8 ori8;
+#if defined(CONFIG_RTL8192F)
+	u16 ori16;
+#endif
+
+	if (dst_port == HW_PORT0) {
+		/* disable related TSF function, if needed*/
+		ori8 = rtw_read8(adapter, REG_BCN_CTRL);
+		if (ori8 & EN_BCN_FUNCTION)
+			rtw_write8(adapter, REG_BCN_CTRL, ori8 & ~EN_BCN_FUNCTION);
+#if defined(CONFIG_RTL8192F)
+		ori16 = rtw_read16(adapter, REG_WLAN_ACT_MASK_CTRL_1);
+		if (ori16 & EN_PORT_0_FUNCTION)
+			rtw_write16(adapter, REG_WLAN_ACT_MASK_CTRL_1, ori16 & ~EN_PORT_0_FUNCTION);
+#endif
+
+		/* bcn0 = bcn1+offset */
+		rtw_write8(adapter, REG_DUAL_TSF_RST, BIT(2));
+
+		/* enable related TSF function, if needed */
+		if (ori8 & EN_BCN_FUNCTION)
+			rtw_write8(adapter, REG_BCN_CTRL, ori8);
+#if defined(CONFIG_RTL8192F)
+		if (ori16 & EN_PORT_0_FUNCTION)
+			rtw_write16(adapter, REG_WLAN_ACT_MASK_CTRL_1, ori16);
+#endif
+
+	} else if (dst_port == HW_PORT1) {
+		/* disable related TSF function, if needed */
+		ori8 = rtw_read8(adapter, REG_BCN_CTRL_1);
+		if (ori8 & EN_BCN_FUNCTION)
+			rtw_write8(adapter, REG_BCN_CTRL_1, ori8 & ~EN_BCN_FUNCTION);
+#if defined(CONFIG_RTL8192F)
+		ori16 = rtw_read16(adapter, REG_WLAN_ACT_MASK_CTRL_1);
+		if (ori16 & EN_PORT_1_FUNCTION)
+			rtw_write16(adapter, REG_WLAN_ACT_MASK_CTRL_1, ori16 & ~EN_PORT_1_FUNCTION);
+#endif
+
+		/* bcn1 = bcn0+offset */
+		rtw_write8(adapter, REG_DUAL_TSF_RST, BIT(3));
+
+		/* enable related TSF function, if needed */
+		if (ori8 & EN_BCN_FUNCTION)
+			rtw_write8(adapter, REG_BCN_CTRL_1, ori8);
+#if defined(CONFIG_RTL8192F)
+		if (ori16 & EN_PORT_1_FUNCTION)
+			rtw_write16(adapter, REG_WLAN_ACT_MASK_CTRL_1, ori16);
+#endif
+
+	} else {
+		RTW_ERR("%s unsupported port:%u", __func__, dst_port);
+		rtw_warn_on(1);
+	}
+}
+
+#ifdef CONFIG_TSF_SYNC_DRV_TRIGGER
+static void hw_var_set_correct_tsf(_adapter *adapter, u8 mlme_act)
+{
+#if defined(CONFIG_CONCURRENT_MODE) && defined(CONFIG_AP_MODE)
+	struct dvobj_priv *dvobj = adapter_to_dvobj(adapter);
+	bool sync = false;
+	_adapter *m_if = NULL;
+
+	switch (mlme_act) {
+	case MLME_ACTION_NONE:
+		/* watch dog */
+		if (DEV_AP_NUM(dvobj) || DEV_MESH_NUM(dvobj))
+			if (DEV_STA_LD_NUM(dvobj)) {
+				m_if = rtw_mi_get_ap_mesh_iface_by_hwband(dvobj, HW_BAND_MAX);
+				sync = true;
+			}
+		break;
+
+	case MLME_STA_CONNECTED:
+		if (DEV_AP_NUM(dvobj) || DEV_MESH_NUM(dvobj)) {
+			m_if = rtw_mi_get_ap_mesh_iface_by_hwband(dvobj, HW_BAND_MAX);
+			sync = true;
+		}
+		break;
+
+	case MLME_AP_STARTED:
+	case MLME_MESH_STARTED:
+		if (DEV_STA_LD_NUM(dvobj)) {
+			m_if = adapter;
+			sync = true;
+		}
+		break;
+
+	default:
+		RTW_ERR(FUNC_ADPT_FMT" unexpected mlme_act:%u\n", FUNC_ADPT_ARG(adapter), mlme_act);
+		rtw_warn_on(1);
+		break;
+	}
+
+	if (0)
+		RTW_INFO(FUNC_ADPT_FMT " mlme_act:%u ap_num:%u mesh_num:%u sta_ld_num:%u sync:%d\n"
+			, FUNC_ADPT_ARG(adapter), mlme_act, DEV_AP_NUM(dvobj), DEV_MESH_NUM(dvobj)
+			, DEV_STA_LD_NUM(dvobj), sync);
+	if (!sync)
+		return;
+
+	if (!m_if) {
+		RTW_ERR(FUNC_ADPT_FMT" mlme_act:%u sync but no m_if\n", FUNC_ADPT_ARG(adapter), mlme_act);
+		rtw_warn_on(1);
+		return;
+	}
+
+	if (m_if->hw_port != HW_PORT0) {
+		RTW_ERR(FUNC_ADPT_FMT" mlme_act:%u sync but m_if->hw_port != HW_PORT0\n", FUNC_ADPT_ARG(adapter), mlme_act);
+		rtw_warn_on(1);
+		return;
+	}
+
+	rtw_hal_tsf_sync(adapter, HW_PORT0);
+#endif
+}
+#else
 static void rtw_hal_correct_tsf(_adapter *padapter, u8 hw_port, u64 tsf)
 {
 	if (hw_port == HW_PORT0) {
@@ -13119,10 +13328,7 @@ static void hw_var_set_correct_tsf(_adapter *adapter, u8 mlme_state)
 						, __func__, ADPT_ARG(iface), iface->hw_port);
 				#endif	/* CONFIG_TSF_RESET_OFFLOAD*/
 				#ifdef CONFIG_TSF_SYNC
-				if(iface->hw_port == HW_PORT0)
-					rtw_write8(iface, REG_DUAL_TSF_RST, rtw_read8(iface, REG_DUAL_TSF_RST) | BIT(2));
-				else if(iface->hw_port == HW_PORT1)
-					rtw_write8(iface, REG_DUAL_TSF_RST, rtw_read8(iface, REG_DUAL_TSF_RST) | BIT(3));
+				rtw_hal_tsf_sync(iface, iface->hw_port);
 				#endif
 			}
 			#endif /* CONFIG_AP_MODE */
@@ -13133,6 +13339,7 @@ static void hw_var_set_correct_tsf(_adapter *adapter, u8 mlme_state)
 		|| (mlmeinfo->state & 0x03) == WIFI_FW_AP_STATE)
 		ResumeTxBeacon(adapter);
 }
+#endif /* CONFIG_TSF_SYNC_DRV_TRIGGER */
 #endif /*#ifdef CONFIG_MI_WITH_MBSSID_CAM*/
 #endif /*#ifdef CONFIG_HW_P0_TSF_SYNC*/
 #endif /*#ifndef CONFIG_HAS_HW_VAR_CORRECT_TSF*/
@@ -16704,3 +16911,62 @@ void rtw_hal_bcn_early_rpt_c2h_handler(_adapter *padapter)
 #endif
 #endif
 }
+
+#ifndef RTW_HALMAC
+void rtw_hal_init_sifs_backup(_adapter *adapter)
+{
+	HAL_DATA_TYPE *hal_data = GET_HAL_DATA(adapter);
+
+	hal_data->init_reg_0x428 = rtw_read16(adapter, 0x428);
+	hal_data->init_reg_0x514 = rtw_read32(adapter, 0x514);
+	hal_data->init_reg_0x63a = rtw_read16(adapter, 0x63a);
+	hal_data->init_reg_0x63c = rtw_read32(adapter, 0x63c);
+
+#ifndef RTW_SIFS_INIT_CHK
+#define RTW_SIFS_INIT_CHK 1
+#endif
+
+#if RTW_SIFS_INIT_CHK
+/*
+the expected initial values:
+0x428[15:0]=0x100A
+0x514[31:0]=0x0E0A0E0A
+0x63A[15:0]=0x100A
+0x63C[31:0]=0x0E0E0A0A
+*/
+#define INIT_REG_0x428 0x100A
+#define INIT_REG_0x514 0x0E0A0E0A
+#define INIT_REG_0x63A 0x100A
+#define INIT_REG_0x63C 0x0E0E0A0A
+
+	if (hal_data->init_reg_0x428 != INIT_REG_0x428) {
+		RTW_WARN("init_reg_0x428:0x%04x != 0x%04x\n", hal_data->init_reg_0x428, INIT_REG_0x428);
+		#if RTW_SIFS_INIT_CHK > 1
+		hal_data->init_reg_0x428 = INIT_REG_0x428;
+		rtw_write16(adapter, 0x428, hal_data->init_reg_0x428);
+		#endif
+	}
+	if (hal_data->init_reg_0x514 != INIT_REG_0x514) {
+		RTW_WARN("init_reg_0x514:0x%08x != 0x%08x\n", hal_data->init_reg_0x514, INIT_REG_0x514);
+		#if RTW_SIFS_INIT_CHK > 1
+		hal_data->init_reg_0x514 = INIT_REG_0x514;
+		rtw_write32(adapter, 0x514, hal_data->init_reg_0x514);
+		#endif
+	}
+	if (hal_data->init_reg_0x63a != INIT_REG_0x63A) {
+		RTW_WARN("init_reg_0x63a:0x%04x != 0x%04x\n", hal_data->init_reg_0x63a, INIT_REG_0x63A);
+		#if RTW_SIFS_INIT_CHK > 1
+		hal_data->init_reg_0x63a = INIT_REG_0x63A;
+		rtw_write16(adapter, 0x63a, hal_data->init_reg_0x63a);
+		#endif
+	}
+	if (hal_data->init_reg_0x63c != INIT_REG_0x63C) {
+		RTW_WARN("init_reg_0x63c:0x%08x != 0x%08x\n", hal_data->init_reg_0x63c, INIT_REG_0x63C);
+		#if RTW_SIFS_INIT_CHK > 1
+		hal_data->init_reg_0x63c = INIT_REG_0x63C;
+		rtw_write32(adapter, 0x63c, hal_data->init_reg_0x63c);
+		#endif
+	}
+#endif
+}
+#endif

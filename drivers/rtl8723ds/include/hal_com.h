@@ -401,6 +401,7 @@ void rtw_hal_rcr_set_chk_bssid_act_non(_adapter *adapter);
 
 void rtw_iface_enable_tsf_update(_adapter *adapter);
 void rtw_iface_disable_tsf_update(_adapter *adapter);
+void rtw_hal_wait_tsf_update_restore_done(_adapter *adapter, u32 timeout_ms);
 void rtw_hal_periodic_tsf_update_chk(_adapter *adapter);
 void rtw_hal_periodic_tsf_update_end_timer_hdl(void *ctx);
 
@@ -518,6 +519,7 @@ void rtw_hal_set_pathb_phase(_adapter *adapter, u8 phase_idx);
 void rtw_hal_set_fw_rsvd_page(_adapter *adapter, bool finished);
 u8 rtw_hal_get_rsvd_page_num(struct _ADAPTER *adapter);
 
+u32 rtw_hal_get_rand_tsf_offset(u32 hal_max_offset, u32 bcn_int);
 #ifdef CONFIG_TSF_RESET_OFFLOAD
 int rtw_hal_reset_tsf(_adapter *adapter, u8 reset_port);
 #endif
@@ -733,4 +735,9 @@ static inline void rtw_enter_protsel_macsleep(_adapter *padapter, u8 port_sel) {
 static inline bool rtw_assert_protsel_macsleep(_adapter *padapter, u32 addr, u8 len) {return true; }
 static inline void rtw_leave_protsel_macsleep(_adapter *padapter) {}
 #endif
+
+#ifndef RTW_HALMAC
+void rtw_hal_init_sifs_backup(_adapter *adapter);
+#endif
+
 #endif /* __HAL_COMMON_H__ */

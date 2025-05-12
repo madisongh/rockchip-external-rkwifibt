@@ -80,9 +80,17 @@
 /* Default enable single wiphy if driver ver >= 5.9 */
 #define RTW_SINGLE_WIPHY
 
+#if (defined(__ANDROID_COMMON_KERNEL__) && !defined(CONFIG_RTW_ANDROID))
+	#error "Set CONFIG_RTW_ANDROID in Makefile while build with Android Common Kernel!!"
+#endif
+
 #ifdef CONFIG_RTW_ANDROID
 
 	#include <linux/version.h>
+
+	#ifndef CONFIG_PLATFORM_ANDROID
+	#define CONFIG_PLATFORM_ANDROID
+	#endif
 	
 	#ifndef CONFIG_IOCTL_CFG80211
 	#define CONFIG_IOCTL_CFG80211
@@ -118,8 +126,10 @@
 	#ifndef CONFIG_RTW_WIFI_HAL_DEBUG
 	//#define CONFIG_RTW_WIFI_HAL_DEBUG
 	#endif
+	#if (CONFIG_RTW_ANDROID < 11)
 	#ifndef CONFIG_RTW_CFGVENDOR_LLSTATS
 	#define CONFIG_RTW_CFGVENDOR_LLSTATS
+	#endif
 	#endif
 	#if (CONFIG_RTW_ANDROID < 11)
 	#ifndef CONFIG_RTW_CFGVENDOR_RANDOM_MAC_OUI
@@ -811,10 +821,6 @@ defined(CONFIG_RTL8723F) /*|| defined(CONFIG_RTL8814A)*/
 /* Debug related compiler flags */
 #define DBG_THREAD_PID	/* Add thread pid to debug message prefix */
 #define DBG_CPU_INFO	/* Add CPU info to debug message prefix */
-#endif
-
-#ifndef RTW_AMSDU_MODE
-#define RTW_AMSDU_MODE 0 /* 0:non-SPP, 1:spp mode, 2:All drop */
 #endif
 
 #endif /* __DRV_CONF_H__ */

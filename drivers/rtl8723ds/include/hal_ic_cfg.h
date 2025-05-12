@@ -41,7 +41,11 @@
 #define RTL8812F_SUPPORT				0
 #define RTL8197G_SUPPORT				0
 #define RTL8710C_SUPPORT				0
-
+#define RTL8814C_SUPPORT				0
+#define RTL8735B_SUPPORT				0
+#define RTL8730A_SUPPORT				0
+#define RTL8822E_SUPPORT				0
+#define RTL8721F_SUPPORT				0
 
 /*#if (RTL8188E_SUPPORT==1)*/
 #define RATE_ADAPTIVE_SUPPORT			0
@@ -173,6 +177,8 @@
 	#ifndef CONFIG_TXPWR_PG_WITH_PWR_IDX
 	#define CONFIG_TXPWR_PG_WITH_PWR_IDX
 	#endif
+	#define CONFIG_STOP_RESUME_BCN_BY_TXPAUSE /*to fixed no bcn issue*/
+	#define CONFIG_TSF_SYNC_DRV_TRIGGER
 #endif
 
 #ifdef CONFIG_RTL8814A
@@ -226,6 +232,8 @@
 	#ifndef CONFIG_TXPWR_PG_WITH_PWR_IDX
 	#define CONFIG_TXPWR_PG_WITH_PWR_IDX
 	#endif
+
+	#define CONFIG_TSF_SYNC_DRV_TRIGGER
 #endif
 
 #ifdef CONFIG_RTL8188GTV

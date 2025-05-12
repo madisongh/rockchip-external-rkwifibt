@@ -233,7 +233,7 @@ static void _InitTxBufferBoundary(PADAPTER padapter)
 	rtw_write8(padapter, REG_TDECTRL + 1, txpktbuf_bndy);
 
 #ifdef CONFIG_CONCURRENT_MODE
-	val8 = txpktbuf_bndy + BCNQ_PAGE_NUM_8723D + WOWLAN_PAGE_NUM_8723D;
+	val8 = txpktbuf_bndy;
 	rtw_write8(padapter, REG_BCNQ1_BDNY, val8);
 	rtw_write8(padapter, REG_DWBCN1_CTRL_8723D + 1, val8); /* BCN1_HEAD */
 
@@ -332,8 +332,10 @@ _InitNormalChipTwoOutEpPriority(
 	if (!pregistrypriv->wifi_spec) {
 		beQ		= valueLow;
 		bkQ		= valueLow;
-		viQ		= valueHi;
-		voQ		= valueHi;
+//		viQ		= valueHi;
+//		voQ		= valueHi;
+		viQ		= valueLow;
+		voQ		= valueLow;
 		mgtQ	= valueHi;
 		hiQ		= valueHi;
 	} else { /* for WMM ,CONFIG_OUT_EP_WIFI_MODE */
@@ -497,10 +499,6 @@ void _InitAdaptiveCtrl(PADAPTER padapter)
 	/* CF-END Threshold */
 	/* m_spIoBase->rtw_write8(REG_CFEND_TH, 0x1); */
 
-	/* SIFS (used in NAV) */
-	value16 = _SPEC_SIFS_CCK(0x10) | _SPEC_SIFS_OFDM(0x10);
-	rtw_write16(padapter, REG_SPEC_SIFS, value16);
-
 	/* Retry Limit */
 	value16 = BIT_LRL(RL_VAL_STA) | BIT_SRL(RL_VAL_STA);
 	rtw_write16(padapter, REG_RETRY_LIMIT, value16);
@@ -508,16 +506,6 @@ void _InitAdaptiveCtrl(PADAPTER padapter)
 
 void _InitEDCA(PADAPTER padapter)
 {
-	/* Set Spec SIFS (used in NAV) */
-	rtw_write16(padapter, REG_SPEC_SIFS, 0x100a);
-	rtw_write16(padapter, REG_MAC_SPEC_SIFS, 0x100a);
-
-	/* Set SIFS for CCK */
-	rtw_write16(padapter, REG_SIFS_CTX, 0x100a);
-
-	/* Set SIFS for OFDM */
-	rtw_write16(padapter, REG_SIFS_TRX, 0x100a);
-
 	/* TXOP */
 	rtw_write32(padapter, REG_EDCA_BE_PARAM, 0x005EA42B);
 	rtw_write32(padapter, REG_EDCA_BK_PARAM, 0x0000A44F);

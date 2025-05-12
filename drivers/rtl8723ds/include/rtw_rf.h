@@ -88,6 +88,11 @@ enum	_REG_PREAMBLE_MODE {
 
 #define rf_path_char(path) (((path) >= RF_PATH_MAX) ? 'X' : 'A' + (path))
 
+enum phl_band_idx {
+	HW_BAND_0,
+	HW_BAND_MAX
+};
+
 /* Bandwidth Offset */
 #define HAL_PRIME_CHNL_OFFSET_DONT_CARE	0
 #define HAL_PRIME_CHNL_OFFSET_LOWER	1
@@ -239,6 +244,7 @@ void txpwr_idx_get_dbm_str(s8 idx, u8 txgi_max, u8 txgi_pdbm, SIZE_T cwidth, cha
 
 void txpwr_mbm_get_dbm_str(s16 mbm, SIZE_T cwidth, char dbm_str[], u8 dbm_str_len);
 s16 mb_of_ntx(u8 ntx);
+s8 txpwr_mbm_to_txgi_s8_with_max(s16 mbm, u8 txgi_max, u8 txgi_pdbm);
 
 #if CONFIG_TXPWR_LIMIT
 struct regd_exc_ent {
