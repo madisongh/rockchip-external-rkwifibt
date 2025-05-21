@@ -246,6 +246,11 @@ start_bt()
 		return 1
 	fi
 
+	if [ -e "/dev/rfkill" ]; then
+		echo "HACK: Remove /dev/rfkill to disable external BT power operations."
+		rm -f /dev/rfkill
+	fi
+
 	echo "Successfully init BT for $WIFIBT_CHIP!"
 }
 
