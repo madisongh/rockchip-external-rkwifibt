@@ -148,6 +148,7 @@ Broadcom	AP6335	02d0:4335	bcmdhd.ko
 Broadcom	AP6354	02d0:4354	bcmdhd.ko
 Broadcom	AP6356S	02d0:4356	bcmdhd.ko
 Broadcom	AP6398S	02d0:4359	bcmdhd.ko
+Broadcom	CYW4373	02d0:4373	cyw4373.ko
 Rockchip	RK960	0296:5349	rk960.ko:fw_no_sleep=1	suspend-reload
 EOF
 fi
