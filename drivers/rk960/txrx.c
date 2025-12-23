@@ -27,6 +27,31 @@
 #ifdef CONFIG_RK960_TESTMODE
 #include "rk960_nl80211_testmode_msg_copy.h"
 #endif /* CONFIG_RK960_TESTMODE */
+
+#ifdef SUPPORT_RK962_POWERSAVE
+static bool keepalive_enable = false;
+module_param(keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(keepalive_enable, "keepalive enable");
+
+static u32 keepalive_port = 0;
+module_param(keepalive_port, uint, 0644);
+MODULE_PARM_DESC(keepalive_port, "keepalive port");
+
+static u32 keepalive_ip =  0x6800a8c0;//(0x68 << 24) | (0 << 16) | (0xa8 << 8) | 0xc0; (192.168.0.104)
+module_param(keepalive_ip, uint, 0644);
+MODULE_PARM_DESC(keepalive_ip, "keepalive IP address");
+
+static u32 keepalive_parameter[5];
+module_param_array(keepalive_parameter, uint, NULL, 0644);
+MODULE_PARM_DESC(keepalive_parameter, "RK960 keepalive parameter");
+
+static unsigned char keepalive_wakeupstring[28];
+module_param_array(keepalive_wakeupstring, byte, NULL, 0644);
+MODULE_PARM_DESC(keepalive_wakeupstring, "RK960 keepalive wakeupstring");
+struct keepalive_param keepalive_param;
+struct alive_templateframe alive_tempframe;
+#endif
+
 static const struct ieee80211_rate *rk960_get_tx_rate(const struct rk960_common
 						      *hw_priv,
 						      const struct
@@ -1094,9 +1119,9 @@ rk960_tx_rate_limit(struct rk960_common *hw_priv,
 
         if (t->sta) {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
-                   mask = t->sta->deflink.ht_cap.mcs.rx_mask[0];
+		   mask = t->sta->deflink.ht_cap.mcs.rx_mask[0];
 #else
-        	   mask = t->sta->ht_cap.mcs.rx_mask[0];
+		   mask = t->sta->ht_cap.mcs.rx_mask[0];
 #endif
         	   for (i = 0; i < IEEE80211_TX_MAX_RATES; ++i) {
         	        if (rates[i].idx < 0)
@@ -1252,7 +1277,9 @@ rk960_tx_h_skb_pad(struct rk960_common *priv,
 }
 
 /* ******************************************************************** */
-
+#ifdef SUPPORT_RK962_POWERSAVE
+#define KEY_UPDATE_SM_PATH "/data/key_update_sm.txt"
+#endif
 void rk960_tx(struct ieee80211_hw *dev,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
 	      struct ieee80211_tx_control *control,
@@ -1275,6 +1302,9 @@ void rk960_tx(struct ieee80211_hw *dev,
 	struct wsm_tx *wsm;
 	bool tid_update = 0;
 	u8 flags = 0;
+#ifdef SUPPORT_RK962_POWERSAVE
+	u8 keepalive_iv_len = 0;
+#endif
 	int ret;
 	struct rk960_vif *priv;
 	struct ieee80211_hdr *frame = (struct ieee80211_hdr *)skb->data;
@@ -1404,6 +1434,63 @@ void rk960_tx(struct ieee80211_hw *dev,
 	ret = rk960_tx_h_crypt(priv, &t);
 	if (ret)
 		goto drop;
+
+#ifdef SUPPORT_RK962_POWERSAVE
+	if(true == keepalive_enable)
+	{
+		RK960_INFO_TXRX("%s keepalive_port: %d\n", __func__, keepalive_port);
+		RK960_INFO_TXRX("%s keepalive_ip: %pI4.\n", __func__, &keepalive_ip);
+		if(NULL != t.tx_info->control.hw_key)
+		{
+			keepalive_iv_len = t.tx_info->control.hw_key->iv_len;
+			RK960_INFO_TXRX("iv_len: %d.\n", t.tx_info->control.hw_key->iv_len);
+		}
+		else
+		{
+			RK960_INFO_TXRX("WIFI have NO password.\n");
+		}
+
+		ret = filter_ieee80211_keepalive_frame((unsigned char *)skb->data, skb->len, 1, keepalive_iv_len, keepalive_ip, keepalive_port);
+		if(0 != ret)
+		{
+			RK960_DEBUG_TXRX("filter_ieee80211_keepalive_frame SUCCESS !!!");
+			alive_tempframe.FrameType = TEMPLATE_FRAME_TCPKEEPALIVEREQUEST_TYPE;
+			alive_tempframe.Rate = 100;
+			alive_tempframe.FrameLength = skb->len;
+
+			RK960_DEBUG_TXRX("FrameType = %d, Rate = %d, skb->len = %d\n",alive_tempframe.FrameType, alive_tempframe.Rate, skb->len);
+
+			memcpy(alive_tempframe.Frame, skb->data, skb->len);
+
+			//memcpy(&keepalive_parameter, skb->data + ret, sizeof(struct keepalive_param));
+
+			keepalive_param.TcpKeepAlive = keepalive_parameter[0];
+			keepalive_param.TcpKeepInterval = keepalive_parameter[1];
+			keepalive_param.TcpKeepCount = keepalive_parameter[2];
+			keepalive_param.IsEnabledTcpkeepalive = keepalive_parameter[3];
+			keepalive_param .WakeupLen = keepalive_parameter[4];
+			memcpy(keepalive_param.WakeupData, keepalive_wakeupstring, keepalive_param.WakeupLen);
+
+			RK960_DEBUG_TXRX("TcpKeepAlive = %d.",keepalive_param.TcpKeepAlive);
+			RK960_DEBUG_TXRX("TcpKeepInterval = %d.",keepalive_param.TcpKeepInterval);
+			RK960_DEBUG_TXRX("TcpKeepCount = %d.",keepalive_param.TcpKeepCount);
+			RK960_DEBUG_TXRX("IsEnabledTcpkeepalive = 0x%x.",keepalive_param.IsEnabledTcpkeepalive);
+			RK960_DEBUG_TXRX("WakeupLen = %d.",keepalive_param.WakeupLen);
+			RK960_DEBUG_TXRX("WakeupData = %s.",keepalive_param.WakeupData);
+			RK960_DEBUG_TXRX("WakeupData(hexint) :");
+			print_hex_dump(KERN_INFO, " ", DUMP_PREFIX_NONE, 16, 1, keepalive_param.WakeupData, keepalive_param.WakeupLen, 1);
+
+			keepalive_param.IsEnabledTcpkeepalive = (keepalive_param.IsEnabledTcpkeepalive << 16);
+			keepalive_param.IsEnabledTcpkeepalive |= keepalive_iv_len;
+			RK960_DEBUG_TXRX("IsEnabledTcpkeepalive(High 16 bits is IsEnabledTcpkeepalive, Low 16 bits is iv_len) = 0x%x.",keepalive_param.IsEnabledTcpkeepalive);
+
+			queue_delayed_work(hw_priv->workqueue, &hw_priv->keepalive_timeout, 0);
+			RK960_DEBUG_TXRX("CALL priv->keepalive_timeout.queue_delayed_work !!!");
+			RK960_DEBUG_TXRX("goto drop!!!");
+			goto drop;
+		}
+	}
+#endif
 	ret = rk960_tx_h_align(priv, &t, &flags);
 	if (ret)
 		goto drop;
@@ -1997,7 +2084,7 @@ static void rk960_csync_clr_accum(struct rk960_common *hw_priv, int index)
 {
 	struct csync_params *csync = &hw_priv->csync_params;
 
-	RK960_DEBUG_TXRX("%s\n", __func__);
+	//RK960_DEBUG_TXRX("%s\n", __func__);
 
 	csync->thresh_accum[index] = 0;
 	csync->avg_thresh[index] = 0;
@@ -2092,8 +2179,8 @@ static int rk960_csync_process(struct rk960_common *hw_priv, int index)
 	struct csync_params *csync = &hw_priv->csync_params;
 	int i;
 
-	RK960_DEBUG_TXRX("%s: index %d sam_size = %d\n", __func__, index,
-			 csync->sam_size[index]);
+	//RK960_DEBUG_TXRX("%s: index %d sam_size = %d\n", __func__, index,
+	//		 csync->sam_size[index]);
 
 	rk960_csync_clr_accum(hw_priv, index);
 
@@ -2622,6 +2709,7 @@ void rk960_fwcr_init(struct rk960_common *hw_priv)
         hw_priv->fwcr_4way_set = 0;
         hw_priv->fwcr_fw_resumed = 1;
         hw_priv->fwcr_update_key = 1;
+        hw_priv->fwcr_encrypt_ap = 0;
         memset(hw_priv->fwcr_bssid, 0, 6);
         
         memset(hw_priv->fwcr_bcn, 0,
@@ -2718,7 +2806,7 @@ void rk960_fwcr_frame_capture(struct rk960_common *hw_priv,
                         frame = &hw_priv->fwcr_auth[2];
                 } else if (type == RK960_FWCR_FRAME_TYPE_3_4WAY) {
                         frame = &hw_priv->fwcr_auth[3];
-                        hw_priv->fwcr_4way_set = 1;
+                        //hw_priv->fwcr_4way_set = 1;
                 } else if (type == RK960_FWCR_FRAME_TYPE_1_2GRO) {
                         frame = &hw_priv->fwcr_group[RK960_FWCR_GROUP_CNT];
                 }
@@ -2830,6 +2918,7 @@ void rk960_fwcr_write(struct rk960_common *hw_priv)
         total += 6; // bt_efuse_mac_addr
         total += 12; // vif_macs[2]
         total += 4; // key_map
+        total += 4; // fwcr_encrypt_ap
         total += sizeof(struct wsm_add_key) * (WSM_KEY_MAX_INDEX + 1); // keys[WSM_KEY_MAX_INDEX + 1];
         
         for (i = 0; i < RK960_FWCR_BCN_CNT; i++) {
@@ -2886,6 +2975,8 @@ void rk960_fwcr_write(struct rk960_common *hw_priv)
         p += 6;
         memcpy(p, hw_priv->vif_macs, 12);
         p += 12;
+        memcpy(p, &hw_priv->fwcr_encrypt_ap, 4);
+        p += 4;
         memcpy(p, &hw_priv->key_map, 4);
         p += 4;
         memcpy(p, hw_priv->keys,
@@ -2931,6 +3022,17 @@ void rk960_fwcr_write(struct rk960_common *hw_priv)
                 p += 2;
                 memcpy(p, &frame->frame_len, 2);
                 p += 2;
+                if(frame->type & RK960_FWCR_FRAME_TYPE_ASSOC)
+                {
+                    // remove the frame control retry bit, or ieee80211_rx_h_check_dup would drop the package.
+					// https://redmine.rock-chips.com/issues/502406
+                    if(frame->frame[1] & 0x08)
+                    {
+                        RK960_INFO_TXRX("remove the fc retry bit,change frame[1] 0x%x to:",frame->frame[1]);
+                        frame->frame[1] &= 0xf7;
+                        RK960_INFO_TXRX("0x%x",frame->frame[1]);
+                    }
+                }
                 memcpy(p, frame->arg, sizeof(struct wsm_rx));
                 p += sizeof(struct wsm_rx);
                 memcpy(p, frame->frame, frame->frame_len);
@@ -2994,7 +3096,7 @@ void rk960_fwcr_read(struct rk960_common *hw_priv)
         }
         
         RK960_DEBUG_TXRX("%s: size %d\n", __func__, size);
-        struct_size = sizeof(struct wsm_caps) + 6 + 6 + 12 + 4 +
+        struct_size = sizeof(struct wsm_caps) + 6 + 6 + 12 + 4 + 4 +
                 sizeof(struct wsm_add_key)*(WSM_KEY_MAX_INDEX + 1);
         if (WARN_ON(size <= struct_size))
                 goto fwcr_read_out;
@@ -3007,6 +3109,8 @@ void rk960_fwcr_read(struct rk960_common *hw_priv)
         p += 6;
         memcpy(hw_priv->vif_macs, p, 12);
         p += 12;
+        memcpy(&hw_priv->fwcr_encrypt_ap, p, 4);
+        p += 4;
         memcpy(&hw_priv->fwcr_key_map, p, 4);
         p += 4;
         memcpy(hw_priv->fwcr_keys, p,
@@ -3100,13 +3204,14 @@ void rk960_fwcr_read(struct rk960_common *hw_priv)
 
         if (WARN_ON(!(flag & RK960_FWCR_FRAME_TYPE_ASSOC)))
                 goto fwcr_read_out;
-
-        if (WARN_ON(!(flag & RK960_FWCR_FRAME_TYPE_1_4WAY)))
+        if(1 == hw_priv->fwcr_encrypt_ap)  //encrypted AP
+        {
+            if (WARN_ON(!(flag & RK960_FWCR_FRAME_TYPE_1_4WAY)))
                 goto fwcr_read_out;
 
-        if (WARN_ON(!(flag & RK960_FWCR_FRAME_TYPE_3_4WAY)))
-                goto fwcr_read_out;
-
+            if (WARN_ON(!(flag & RK960_FWCR_FRAME_TYPE_3_4WAY)))
+                    goto fwcr_read_out;
+        }
         hw_priv->fwcr_bcn_cnt = cnt;
         hw_priv->fwcr_recovery = 1;
         RK960_INFO_TXRX("%s: success\n", __func__);
@@ -3184,6 +3289,18 @@ fwcr_auth_send:
         mdelay(1);
         rk960_rx_cb(priv, frame->arg, &rx_skb);
 
+        if((1 != hw_priv->fwcr_encrypt_ap) && (frame->type >= RK960_FWCR_FRAME_TYPE_ASSOC))  //Unencrypted AP
+        {
+            hw_priv->fwcr_4way_set = 1;
+            hw_priv->fwcr_recovery = 0;
+            hw_priv->fw_hotboot = 0;
+
+            schedule_work(&hw_priv->fwcr_work);
+
+            RK960_INFO_TXRX("%s: unenctypted AP, auth done\n", __func__);
+            ret = 0;
+            goto fwcr_auth_out;
+        }
         if (frame->type == RK960_FWCR_FRAME_TYPE_ASSOC) {
                 frame = &hw_priv->fwcr_auth[2]; // 1/4 4-way
                 goto fwcr_auth_send;
@@ -3783,5 +3900,71 @@ void rk960_link_id_reset(struct work_struct *work)
 			wsm_unlock_tx(hw_priv);
 		flush_workqueue(hw_priv->workqueue);
 	}
+}
+#endif
+
+#ifdef SUPPORT_RK962_POWERSAVE
+void rk960_templateframe_higeneric_work(struct work_struct *work)
+{
+#if 0
+    u8 quzz_ko_buf[250];
+    int cnt;
+#endif
+	struct rk960_common *hw_priv =
+	    container_of(work, struct rk960_common, keepalive_timeout.work);
+
+	RK960_DEBUG_TXRX("%s.",__func__);
+#if 0
+    rk960_access_file(
+            KEY_UPDATE_SM_PATH, quzz_ko_buf, 244, 1);
+    //for(cnt = 0; cnt < 200; cnt += 8)
+    cnt = 0;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    cnt = 50;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    cnt = 100;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    cnt = 150;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    wsm_write_wpa_sm(hw_priv, &quzz_ko_buf, 244, 0);
+#endif
+	wsm_write_template_frame(hw_priv, &alive_tempframe, alive_tempframe.FrameLength + 4, 0);
+	wsm_req_keepalive_info(hw_priv, &keepalive_param, 0);
+}
+
+void rk960_wpa_sm_work(struct work_struct *work)
+{
+#if 1
+    u8 quzz_ko_buf[388];
+    int cnt;
+#endif
+    struct rk960_common *hw_priv =
+        container_of(work, struct rk960_common, rk960_wpa_sm_timeout.work);
+
+    RK960_DEBUG_TXRX("%s.",__func__);
+#if 1
+    rk960_access_file(
+            KEY_UPDATE_SM_PATH, quzz_ko_buf, 380, 1);
+    //for(cnt = 0; cnt < 200; cnt += 8)
+    cnt = 0;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    cnt = 50;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    cnt = 100;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    #if 0
+    cnt = 150;
+    RK960_INFO_TXRX("%x:%x:%x:%x:%x:%x:%x:%x\n",quzz_ko_buf[cnt],quzz_ko_buf[cnt+1],quzz_ko_buf[cnt+2],quzz_ko_buf[cnt+3],
+            quzz_ko_buf[cnt+4],quzz_ko_buf[cnt+5],quzz_ko_buf[cnt+6],quzz_ko_buf[cnt+7]);
+    #endif
+    wsm_write_wpa_sm(hw_priv, &quzz_ko_buf, 380, 0);
+#endif
 }
 #endif

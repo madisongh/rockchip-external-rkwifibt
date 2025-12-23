@@ -286,10 +286,12 @@ static int rk960_sdio_off(const struct rk960_platform_data_sdio *pdata)
 {
 	if (!pwr_ctrl)
 		return 0;
+#ifdef RFKILL_RK
 #ifdef HW_RESET
 	rockchip_wifi_set_carddetect(0);
 	mdelay(10);
 	rockchip_wifi_power(0);
+#endif
 #endif
 	return 0;
 }
@@ -298,12 +300,14 @@ static int rk960_sdio_on(const struct rk960_platform_data_sdio *pdata)
 {
 	if (!pwr_ctrl)
 		return 0;
+#ifdef RFKILL_RK
 #ifdef HW_RESET
 	rockchip_wifi_power(0);
 	mdelay(10);
 	rockchip_wifi_power(1);
 	mdelay(10);
 	rockchip_wifi_set_carddetect(1);
+#endif
 #endif
 	return 0;
 }
@@ -343,6 +347,7 @@ static struct hwbus_ops rk960_sdio_hwbus_ops = {
 	.power_mgmt = rk960_sdio_pm,
 };
 
+extern int rk_host_irq_gpio;
 /* Probe Function to be called by SDIO stack when device is discovered */
 static int rk960_sdio_probe(struct sdio_func *func,
 			    const struct sdio_device_id *id)
@@ -364,7 +369,12 @@ static int rk960_sdio_probe(struct sdio_func *func,
 	}
 
 	func->card->quirks |= MMC_QUIRK_LENIENT_FN0;
+#ifdef RFKILL_RK
 	global_plat_data->irq = rockchip_wifi_get_oob_irq();
+#else
+	global_plat_data->irq = gpio_to_irq(rk_host_irq_gpio);
+#endif
+
 	self->pdata = global_plat_data;	/* FIXME */
 	self->func = func;
 	sdio_set_drvdata(func, self);

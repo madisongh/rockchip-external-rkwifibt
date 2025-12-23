@@ -100,6 +100,8 @@ enum bt_info_src_8723d_1ant {
 	BT_INFO_SRC_8723D_1ANT_WIFI_FW			= 0x0,
 	BT_INFO_SRC_8723D_1ANT_BT_RSP			= 0x1,
 	BT_INFO_SRC_8723D_1ANT_BT_ACTIVE_SEND		= 0x2,
+	BT_INFO_SRC_8723D_1ANT_BT_SLOT1			= 0x7,
+	BT_INFO_SRC_8723D_1ANT_BT_SLOT2			= 0x8,
 	BT_INFO_SRC_8723D_1ANT_MAX
 };
 
@@ -157,8 +159,10 @@ enum bt_8723d_1ant_Scoreboard {
 	BT_8723D_1ANT_SCOREBOARD_UNDERTEST			= BIT(3),
 	BT_8723D_1ANT_SCOREBOARD_RXGAIN				= BIT(4),
 	BT_8723D_1ANT_SCOREBOARD_DKTOPP2M			= BIT(5),
-	BT_8723D_1ANT_SCOREBOARD_WLBUSY				= BIT(6),
+	BT_8723D_1ANT_SCOREBOARD_WLBUSY				= BIT(7),
 	BT_8723D_1ANT_SCOREBOARD_TDMA				= BIT(9),
+	BT_8723D_1ANT_SCOREBOARD_CQDDR				= BIT(10),
+	BT_8723D_1ANT_SCOREBOARD_ALL				= 0xffff
 };
 
 struct coex_dm_8723d_1ant {
@@ -178,6 +182,8 @@ struct coex_dm_8723d_1ant {
 	u8		cur_lps;
 	u8		pre_rpwm;
 	u8		cur_rpwm;
+	u32		bt_slot_length1[10];
+	u32		bt_slot_length2[10];
 
 	/* sw mechanism */
 	boolean	pre_low_penalty_ra;
@@ -224,6 +230,7 @@ struct coex_sta_8723d_1ant {
 	u8		num_of_profile;
 
 	boolean		under_lps;
+	boolean		wl_in_lps_enter;
 	boolean		under_ips;
 	u32		specific_pkt_period_cnt;
 	u8		connect_ap_period_cnt;
@@ -307,6 +314,8 @@ struct coex_sta_8723d_1ant {
 
 	u16		bt_reg_vendor_ac;
 	u16		bt_reg_vendor_ae;
+	u16		bt_reg_le_2e;
+	u16		bt_reg_le_52;
 
 	boolean		is_setup_link;
 	u8		wl_noisy_level;
@@ -350,10 +359,10 @@ struct coex_sta_8723d_1ant {
 	boolean		wl_ampdu_limit_en;
 	boolean		wl_rxagg_limit_en;
 	u8		wl_rxagg_size;
-	
+
 	u8	tdma_timer_base;
 	u8	wl_iot_peer;
-	
+
 };
 
 #define  BT_8723D_1ANT_ANTDET_PSD_POINTS			256

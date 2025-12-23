@@ -1,4 +1,4 @@
-#!/bin/sh -e
+#!/bin/bash -e
 
 BT_PINCTRL_DIR="/sys/firmware/devicetree/base/pinctrl/wireless-bluetooth"
 CHIPS_FILE="/var/run/wifibt-chips.txt"
@@ -37,6 +37,7 @@ wifibt_info()
 		-type f -name vendor -o -name idVendor 2>/dev/null | \
 		xargs grep -El "$VIDS" || true)"
 	for VENDOR in $VENDORS; do
+		DEV="$(basename "$(dirname "$VENDOR")")"
 		BUS=$(echo "$VENDOR" | cut -d'/' -f4)
 		case $BUS in
 			usb) PRODUCT="$(dirname "$VENDOR")/idProduct" ;;
@@ -48,7 +49,7 @@ wifibt_info()
 		ID="$VID:$PID"
 		CHIP="$(grep -v "^#" "$CHIPS_FILE" | grep -w -m 1 "$ID" || true)"
 		if [ "$CHIP" ]; then
-			echo "$CHIP" | sed "s/\($ID\)/$BUS\t\1/" | \
+			echo "$CHIP" | sed "s/\($ID\)/$BUS\t$DEV\t\1/" | \
 				tee "$CHIP_FILE"
 			return
 		fi
@@ -70,24 +71,42 @@ wifibt_bus()
 	wifibt_info | cut -f 3
 }
 
-wifibt_id()
+wifibt_device()
 {
 	wifibt_info | cut -f 4
 }
 
-wifibt_module()
+wifibt_id()
 {
-	FIRST_KO=`wifibt_info | cut -f 5`
-	SECOND_KO=`wifibt_info | cut -f 6`
-	if [[ "$SECOND_KO" =~ "cyw" ]] && [ -e "/lib/modules/$SECOND_KO" ]; then
-		echo "$SECOND_KO"
-	else
-		echo "$FIRST_KO"
-	fi
+	wifibt_info | cut -f 5
 }
 
+wifibt_module()
+{
+	MODULES=`wifibt_info | cut -f 6`
+	for m in ${MODULES//|/ }; do
+		if [ -e "/lib/modules/${m%%:*}" ]; then
+			echo $m
+			return
+		fi
+	done
+}
+
+wifibt_quirk()
+{
+	wifibt_info | cut -f 7
+}
+
+if [ -e "$CHIPS_FILE" ]; then
+	# Invalid out-dated chips file
+	if [ "$CHIPS_FILE" -ot "$(realpath "$0")" ]; then
+		rm -f "$CHIPS_FILE"
+	fi
+fi
+
 if [ ! -r "$CHIPS_FILE" ]; then
-	echo "# Vendor Name VID:PID Module\n" > "$CHIPS_FILE"
+	echo "# Vendor Chip VID:PID Module[:opt]|Falback[:opt] Quirk" \
+		> "$CHIPS_FILE"
 
 	# Prefer /etc/ version
 	cat "/etc/wifibt-chips.txt" >>"$CHIPS_FILE" 2>/dev/null || true
@@ -119,7 +138,7 @@ Realtek	RTL8852BE	10ec:b852	8852be.ko
 Realtek	RTL8852BS	024c:b852	RTL8852BS.ko
 Realtek	RTL8852BU	0bda:a85b	8852bu.ko
 Broadcom	AP6212A	02d0:a9a6	bcmdhd.ko
-Broadcom	AP625X	02d0:a9bf	bcmdhd.ko	cyw43455.ko	# AP6255/AP6256/AP6745
+Broadcom	AP625X	02d0:a9bf	bcmdhd.ko|cyw43455.ko	# AP6255/AP6256/AP6745
 Broadcom	AP6275P	14e4:449d	bcmdhd_pcie.ko
 Broadcom	AP6275S	02d0:aae8	bcmdhd.ko
 Broadcom	AP6276P	14e4:44a0	bcmdhd_pcie.ko
@@ -129,7 +148,8 @@ Broadcom	AP6335	02d0:4335	bcmdhd.ko
 Broadcom	AP6354	02d0:4354	bcmdhd.ko
 Broadcom	AP6356S	02d0:4356	bcmdhd.ko
 Broadcom	AP6398S	02d0:4359	bcmdhd.ko
-Rockchip	RK960	0296:5349	rk960.ko
+Broadcom	CYW4373	02d0:4373	cyw4373.ko
+Rockchip	RK960	0296:5349	rk960.ko:fw_no_sleep=1	suspend-reload
 EOF
 fi
 
@@ -154,10 +174,12 @@ for cmd in "$(basename "$0")" "$1"; do
 		chip | wifibt-chip) wifibt_chip; exit ;;
 		id | wifibt-id) wifibt_id; exit ;;
 		bus | wifibt-bus) wifibt_bus; exit ;;
+		dev | device | wifibt-device) wifibt_device; exit ;;
 		module | wifibt-module) wifibt_module; exit ;;
+		quirk | wifibt-quirk) wifibt_quirk; exit ;;
 	esac
 
 	[ -z "$1" ] || shift
 done
 
-echo "$(basename "$0") <tty|info|vendor|id|bus|chip|module> [-f|--force-reload]"
+echo "$(basename "$0") <tty|info|vendor|id|bus|device|chip|module|quirk> [-f|--force-reload]"

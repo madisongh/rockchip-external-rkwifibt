@@ -118,5 +118,9 @@ void rk960_fwcr_group_frame_capture(struct rk960_common *hw_priv,
         int key_id);
 #endif
 int rk960_pae_type(struct sk_buff *skb, int tx);
+#ifdef SUPPORT_RK962_POWERSAVE
+void rk960_templateframe_higeneric_work(struct work_struct *work);
+void rk960_wpa_sm_work(struct work_struct *work);
+#endif
 
 #endif /* RK960_TXRX_H */

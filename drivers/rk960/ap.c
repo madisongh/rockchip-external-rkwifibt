@@ -439,7 +439,7 @@ void rk960_bss_info_changed(struct ieee80211_hw *dev,
 				u64 changed)
 #else
 				u32 changed)
-#endif			
+#endif
 {
 	struct rk960_common *hw_priv = dev->priv;
 	struct rk960_vif *priv = rk960_get_vif_from_ieee80211(vif);
@@ -492,6 +492,7 @@ void rk960_bss_info_changed(struct ieee80211_hw *dev,
 		memcpy(priv->bssid, info->bssid, ETH_ALEN);
 		rk960_setup_mac_pvif(priv);
 #ifdef IBSS_SUPPORT
+		//TODO 6.1
 		RK960_DEBUG_AP("BSS_CHANGED_BSSID ibss_joined %d bssid = %pM\n",
 			       info->ibss_joined, info->bssid);
 		if (info->
@@ -699,9 +700,9 @@ void rk960_bss_info_changed(struct ieee80211_hw *dev,
 			priv->ssid_length = ssid_len;
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 			memcpy(priv->ssid, vif->cfg.ssid, ssid_len);
-#else	
+#else
 			memcpy(priv->ssid, info->ssid, ssid_len);
-#endif		
+#endif
 		} else
 			RK960_DEBUG_AP("priv->join_status=%d\n",
 				       priv->join_status);
@@ -753,6 +754,7 @@ void rk960_bss_info_changed(struct ieee80211_hw *dev,
 		if (priv->join_status == RK960_JOIN_STATUS_AP) {
 			WARN_ON(rk960_update_beaconing(priv, 0));
 #ifdef IBSS_SUPPORT
+		//TODO 6.1
 		} else if (info->ibss_joined) {
 			do_ibss_join = true;
 #endif
@@ -814,17 +816,17 @@ void rk960_bss_info_changed(struct ieee80211_hw *dev,
 				hw_priv->ht_info.ht_cap = sta->deflink.ht_cap;
 #else
 				hw_priv->ht_info.ht_cap = sta->ht_cap;
-#endif			
+#endif
 				priv->bss_params.operationalRateSet =
 				    __cpu_to_le32(rk960_rate_mask_to_wsm
 						  (hw_priv,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
-							sta->deflink.supp_rates[hw_priv->
-#else						
-						   sta->supp_rates[hw_priv->
-#endif					   
-								   channel->
-								   band]));
+						sta->deflink.supp_rates[hw_priv->
+#else
+						sta->supp_rates[hw_priv->
+#endif
+								channel->
+								band]));
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
 				hw_priv->ht_info.channel_type =
 				    cfg80211_get_chandef_type(&dev->conf.
@@ -844,9 +846,9 @@ void rk960_bss_info_changed(struct ieee80211_hw *dev,
 			//priv->htcap = (sta && rk960_is_ht(&hw_priv->ht_info));
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 			priv->htcap = (sta && sta->deflink.ht_cap.ht_supported);
-#else		
+#else
 			priv->htcap = (sta && sta->ht_cap.ht_supported);
-#endif		
+#endif
 			//rk960_for_each_vif(hw_priv, tmp_priv, i) {
 			for (i = 0; i < RK960_MAX_VIFS; i++) {
 				tmp_priv = hw_priv->vif_list[i] ?

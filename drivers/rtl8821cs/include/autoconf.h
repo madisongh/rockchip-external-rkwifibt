@@ -172,7 +172,7 @@
 #define CONFIG_RTW_NAPI_V2
 #endif
 
-/*#define CONFIG_BEAMFORMING*/ 
+#define CONFIG_BEAMFORMING
 
 #define CONFIG_REDUCE_TX_CPU_LOADING
 
@@ -227,8 +227,11 @@
 
 #ifdef CONFIG_POWER_SAVING
 	#define CONFIG_IPS
-	#define CONFIG_LPS
+	#ifdef CONFIG_IPS
+		/* #define CONFIG_FWLPS_IN_IPS */
+	#endif /* CONFIG_IPS */
 
+	#define CONFIG_LPS
 	#if defined(CONFIG_LPS) && (defined(CONFIG_GSPI_HCI) || defined(CONFIG_SDIO_HCI))
 	#define CONFIG_LPS_LCLK
 	#endif

@@ -215,6 +215,8 @@ extern const u16	phy_rate_table[84];
 
 #define		HW_IGI_TXINFO_TABLE_SIZE 64
 
+#define		PHYDM_SNPRINT_SIZE	64
+
 #ifdef BB_RAM_SUPPORT
 
 struct phydm_bb_ram_per_sta {
@@ -440,6 +442,8 @@ enum odm_cmninfo {
 	ODM_CMNINFO_HP_HWID,
 	ODM_CMNINFO_HUAWEI_HWID,
 	ODM_CMNINFO_ATHEROS_HWID,
+	ODM_CMNINFO_BROADCOM_HWID,
+	ODM_CMNINFO_RALINK_HWID,
 	ODM_CMNINFO_TSSI_ENABLE, /*also for cmn_info_update*/
 	ODM_CMNINFO_DIS_DPD,
 	ODM_CMNINFO_POWER_VOLTAGE,
@@ -654,6 +658,7 @@ enum phydm_dbg_comp {
 	DBG_ADPTV_SOML		= BIT(F17_ADPTV_SOML),
 	DBG_LNA_SAT_CHK		= BIT(F18_LNA_SAT_CHK),
 	/*Neet to re-arrange*/
+	DBG_CMN_OTHER		= BIT(19),
 	DBG_PHY_STATUS		= BIT(20),
 	DBG_TMP			= BIT(21),
 	DBG_FW_TRACE		= BIT(22),
@@ -769,7 +774,8 @@ struct _phydm_mcc_dm_ {
 };
 #endif
 
-#if (RTL8822C_SUPPORT || RTL8812F_SUPPORT || RTL8197G_SUPPORT || RTL8723F_SUPPORT)
+#if (RTL8822C_SUPPORT || RTL8812F_SUPPORT || RTL8197G_SUPPORT || RTL8723F_SUPPORT ||\
+	 RTL8735B_SUPPORT || RTL8730A_SUPPORT || RTL8814B_SUPPORT || RTL8822E_SUPPORT)
 struct phydm_physts {
 	u8			cck_gi_u_bnd;
 	u8			cck_gi_l_bnd;
@@ -802,6 +808,8 @@ struct dm_struct {
 	u32			rx_pwdb_ave;
 	boolean		is_init_hw_info_by_rfe;
 	boolean         is_R2R_CCA_MASKT_TIME_SHORT;
+	boolean		is_fixed_chsm_winsize_bc;
+	boolean		is_fixed_chsm_winsize_mtk;
 #if (DM_ODM_SUPPORT_TYPE & ODM_WIN)
 	u32			rts_drop_cnt;
 	u32			low_rate_tx_fail_cnt;
@@ -810,7 +818,7 @@ struct dm_struct {
 
 	//TSSI
 	u8			en_tssi_mode;
-	#if (RTL8723F_SUPPORT)
+	#if (RTL8723F_SUPPORT || RTL8735B_SUPPORT || RTL8730A_SUPPORT)
 	//ZWDFS for 80M
 	u8			en_zwdfs_bw80;
 	#endif
@@ -885,14 +893,16 @@ struct dm_struct {
 	u8			en_auto_bw_th;
 	boolean			is_pause_dig;
 	boolean			en_nbi_detect;
-	#if (RTL8822C_SUPPORT || RTL8814B_SUPPORT || RTL8197G_SUPPORT)
+	#if (RTL8822C_SUPPORT || RTL8814B_SUPPORT || RTL8197G_SUPPORT ||\
+		RTL8730A_SUPPORT || RTL8822E_SUPPORT)
 	u8			txagc_buff[RF_PATH_MEM_SIZE][PHY_NUM_RATE_IDX];
 	u32			bp_0x9b0;
-	#elif (RTL8723F_SUPPORT)
+	#elif (RTL8723F_SUPPORT || RTL8735B_SUPPORT)
 	u8			txagc_buff[2][PHY_NUM_RATE_IDX];
 	u32			bp_0x9b0;
 	#endif
-	#if (RTL8822C_SUPPORT || RTL8723F_SUPPORT)
+	#if (RTL8822C_SUPPORT || RTL8723F_SUPPORT || RTL8735B_SUPPORT ||\
+		RTL8730A_SUPPORT || RTL8822E_SUPPORT)
 	u8			ofdm_rxagc_l_bnd[16];
 	boolean			l_bnd_detect[16];
 	u16			agc_rf_gain_ori[16][64];/*[table][mp_gain_idx]*/
@@ -901,6 +911,12 @@ struct dm_struct {
 	boolean			is_agc_tab_pos_shift;
 	u8			agc_table_shift;
 	#endif
+	#if (RTL8822E_SUPPORT)
+	boolean			bt_is_linked;
+	#endif
+	boolean			is_nbi_csi;
+	char			dbg_buf[PHYDM_SNPRINT_SIZE];
+	u8			rx_rate_plurality;
 /*@-----------HOOK BEFORE REG INIT-----------*/
 /*@===========================================================*/
 /*@====[ CALL BY Reference ]=========================================*/
@@ -945,7 +961,7 @@ struct dm_struct {
 /*@===========================================================*/
 /*@====[ CALL BY VALUE ]===========================================*/
 /*@===========================================================*/
-
+	u8			retry_cnt;
 	u8			disable_phydm_watchdog;
 	boolean			is_link_in_process;
 	boolean			is_wifi_direct;
@@ -961,6 +977,7 @@ struct dm_struct {
 	u8			rssi_max;
 	u8			rssi_max_macid;
 	u8			rssi_min_by_path;
+	u8			is_orientation_env;
 	boolean			is_mp_chip;
 	boolean			is_one_entry_only;
 	u32			one_entry_macid;
@@ -1109,6 +1126,8 @@ struct dm_struct {
 #if (RTL8814B_SUPPORT || RTL8198F_SUPPORT)
 	u8			csi_wgt_th_db[5]; /*@wgt 4,3,2,1,0 */
 						  /*    ^ ^ ^ ^ ^  */
+	u8			psd_trials_sw_log2;
+	u8			psd_trials_hw_log2;
 #endif
 	/*@------------------------------------------*/
 
@@ -1261,7 +1280,7 @@ struct dm_struct {
 #if (DM_ODM_SUPPORT_TYPE & ODM_WIN)
 	struct odm_phy_dbg_info		phy_dbg_info_win_bkp;
 #endif
-#ifdef PHYDM_IC_JGR3_SERIES_SUPPORT
+#if (defined (PHYDM_IC_JGR3_SERIES_SUPPORT) && defined (CONFIG_BB_TXBF_API))
 	struct phydm_bf_rate_info_jgr3 bf_rate_info_jgr3;
 #endif
 
@@ -1374,7 +1393,8 @@ struct dm_struct {
 #endif
 /*@==========================================================*/
 
-#if (RTL8822C_SUPPORT || RTL8812F_SUPPORT || RTL8197G_SUPPORT || RTL8723F_SUPPORT)
+#if (RTL8822C_SUPPORT || RTL8812F_SUPPORT || RTL8197G_SUPPORT || RTL8723F_SUPPORT ||\
+	 RTL8735B_SUPPORT || RTL8730A_SUPPORT || RTL8814B_SUPPORT || RTL8822E_SUPPORT)
 	/*@-------------------phydm_phystatus report --------------------*/
 	struct phydm_physts dm_physts_table;
 #endif

@@ -20,12 +20,29 @@
 #include "fwio.h"
 //#include "fw_data.h"
 
+#define RK96x_LOADER_NAME "rk96x_wifi_loader.bin"
+
+#define RK962_EFUSE     0x0962
+
+#define RK960_FW1       "rk960_wifi_rf.bin"
+#define RK960_FW2       "rk960_wifi.bin"
+#define RK96x_SDD       "rk96x_sdd.txt"
+#define RK962_FW1       "rk962_wifi_rf.bin"
+#define RK962_FW2       "rk962_wifi.bin"
+#define RK962_FW2_ALIAS "rk962_fw.bin"
+
 struct io_cmd {
 	u32 id;
 	u32 length;
 	u32 addr;
 	u32 code_copy_addr;
+#ifdef FW_DOWNLOAD_CHECK
+	u32 hash_value;
+#endif
 };
+
+static const char * fw1_name;
+static const char * fw2_name;
 
 static s8 rk960_atoi(u8 * s)
 {
@@ -154,18 +171,6 @@ void rk960_free_firmware_buf(struct firmware_info *fw_info)
 	RK960_DEBUG_FW("%s\n", __func__);
 
 #ifdef FW_LOADER_FROM_FOPEN
-	if (fw_info->loder_data)
-		vfree(fw_info->loder_data);
-	fw_info->loder_data = NULL;
-
-	if (fw_info->fw_data)
-		vfree(fw_info->fw_data);
-	fw_info->fw_data = NULL;
-
-	if (fw_info->fw_rfcal_data)
-		vfree(fw_info->fw_rfcal_data);
-	fw_info->fw_rfcal_data = NULL;
-
 	if (fw_info->sdd_data)
 		vfree(fw_info->sdd_data);
 	fw_info->sdd_data = NULL;
@@ -179,15 +184,13 @@ void rk960_free_firmware_buf(struct firmware_info *fw_info)
         if (fw_info->sdd_data_r)
                 release_firmware(fw_info->sdd_data_r);
 #endif
+	if (fw_info->fw_data)
+		kfree(fw_info->fw_data);
+	fw_info->fw_data = NULL;
 
 	if (fw_info->buf_data)
 		kfree(fw_info->buf_data);
-
-#ifdef FW_DOWNLOAD_CHECK
-	if (fw_info->fw_data_check)
-		vfree(fw_info->fw_data_check);
-	fw_info->fw_data_check = NULL;
-#endif
+	fw_info->buf_data = NULL;
 
 	if (fw_info->fw_start_data)
 		kfree(fw_info->fw_start_data);
@@ -196,47 +199,24 @@ void rk960_free_firmware_buf(struct firmware_info *fw_info)
 
 int rk960_alloc_firmware_buf(struct firmware_info *fw_info)
 {
-	RK960_DEBUG_FW("%s\n", __func__);
-
 #ifdef FW_LOADER_FROM_FOPEN
-	fw_info->loder_data = vmalloc(MAX_LOADER_DATA_SIZE);
-	if (fw_info->loder_data == NULL) {
-		RK960_ERROR_FW("alloc loder1_data failed\n");
-		return -ENOMEM;
-	}
-
-	fw_info->fw_data = vmalloc(MAX_FW_DATA_SIZE);
-	if (fw_info->fw_data == NULL) {
-		RK960_ERROR_FW("alloc fw_data failed\n");
-		return -ENOMEM;
-	}
-
-	fw_info->fw_rfcal_data = vmalloc(MAX_FW_RFCAL_DATA_SIZE);
-	if (fw_info->fw_rfcal_data == NULL) {
-		RK960_ERROR_FW("alloc fw_rfcal_data failed\n");
-		return -ENOMEM;
-	}
-
 	fw_info->sdd_data = vmalloc(MAX_SDD_BUF_SIZE);
 	if (fw_info->sdd_data == NULL) {
 		RK960_ERROR_FW("alloc sdd_data failed\n");
 		return -ENOMEM;
 	}
 #endif
+	fw_info->fw_data = kmalloc(fw_info->fw_size, GFP_KERNEL);
+	if (fw_info->fw_data == NULL) {
+		RK960_ERROR_FW("alloc fw_data failed\n");
+		return -ENOMEM;
+	}
 
 	fw_info->buf_data = kmalloc(fw_info->buf_size, GFP_KERNEL);
 	if (fw_info->buf_data == NULL) {
 		RK960_ERROR_FW("alloc buf_data failed\n");
 		return -ENOMEM;
 	}
-
-#ifdef FW_DOWNLOAD_CHECK
-	fw_info->fw_data_check = vmalloc(MAX_FW_DATA_SIZE);
-	if (fw_info->fw_data_check == NULL) {
-		RK960_ERROR_FW("alloc fw_data_check failed\n");
-		return -ENOMEM;
-	}
-#endif
 
 	fw_info->fw_start_data = kmalloc(16, GFP_KERNEL);
 	if (fw_info->fw_start_data == NULL) {
@@ -251,197 +231,77 @@ static const char *const fw_path[] = {
 	"/etc/firmware",
 	"/vendor/etc/firmware",
 	"/lib/firmware",
-	"/system/etc/firmware"
+	"/system/etc/firmware",
+	"/oem/usr/ko",
+	"/data"
 };
 
-static int rk960_read_firmware_file(struct firmware_info *fw_info,
-				    char *name, u8 * buf, int *len,
-				    int max_size, int append)
-{
-	int i, find = 0;
-	char path[64];
-	struct file *file;
-	int read, size = 1024;
-	u8 *buf_start = buf;
-
-	RK960_DEBUG_FW("%s: %s\n", __func__, name);
-
-	for (i = 0; i < ARRAY_SIZE(fw_path); i++) {
-		if (!fw_path[i][0])
-			continue;
-
-		sprintf(path, "%s/%s", fw_path[i], name);
-		//pr_info("%s\n", path);
-
-		file = filp_open(path, O_RDONLY, 0);
-		if (IS_ERR(file))
-			continue;
-
-		find = 1;
-		break;
-	}
-
-	if (!find) {
-		RK960_ERROR_FW("%s: can't find %s\n", __func__, path);
-		return -ENOENT;
-	}
-
-	RK960_DEBUG_FW("%s: find %s\n", __func__, path);
-
-        if (rk960_get_file_size(path) > max_size) {
-                RK960_ERROR_FW("%s: file(%s) size exceed fw buf(%d)\n",
-                        __func__, path, max_size);
-                return -ENOMEM;     
-        }
-
-	*len = 0;
-	while (1) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
-		read = kernel_read(file, buf, size, &file->f_pos);
-#else
-		read = kernel_read(file, file->f_pos, buf, size);
-#endif
-		if (read <= 0)
-			break;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-		file->f_pos += read;
-#endif
-		buf += read;
-		*len += read;
-	}
-
-	filp_close(file, NULL);
-	*len = ALIGN(*len, 4);
-
-	if (append) {
-		fw_info->useful_code_size = *len;
-
-		//We copy the data with this address whichbe crashed by LOADER's start CMD.
-		memcpy(buf_start + *len, buf_start + 0x10000, 16);
-		*len += 16;
-	}
-
-	if (*len > max_size) {
-		RK960_ERROR_FW("%s file exceed max size %d(%d)\n", name, *len,
-			       max_size);
-		return -ENOMEM;
-	}
-
-	return 0;
-}
-
-int rk960_get_firmware_from_open(struct firmware_info *fw_info)
-{
-	int ret;
-
-	RK960_INFO_FW("firmware and patch file from open\n");
-
-	ret = rk960_read_firmware_file(fw_info, "rk960_wifi_loader.bin",
-				       fw_info->loder_data,
-				       &fw_info->loder_size,
-				       MAX_LOADER_DATA_SIZE, 0);
-	if ((ret < 0) || (fw_info->loder_size <= 0)) {
-		//RK960_INFO_FW("no rk960_wifi_loader.bin file\n");
-	}
-	fw_info->loder_size = ALIGN(fw_info->loder_size, 1024);
-
-	ret = rk960_read_firmware_file(fw_info, "rk960_wifi.bin",
-				       fw_info->fw_data, &fw_info->fw_size,
-				       MAX_FW_DATA_SIZE, 0);
-	if ((ret < 0) || (fw_info->fw_size <= 0)) {
-		if (ret == -ENOENT) {
-			ret = rk960_read_firmware_file(fw_info, "rk960_fw.bin",
-						       fw_info->fw_data,
-						       &fw_info->fw_size,
-						       MAX_FW_DATA_SIZE, 0);
-			if ((ret < 0) || (fw_info->fw_size <= 0))
-				return -ENOENT;
-		} else {
-			return -ENOENT;
-		}
-	}
-
-	ret = rk960_read_firmware_file(fw_info, "rk960_wifi_rf.bin",
-				       fw_info->fw_rfcal_data,
-				       &fw_info->fw_rfcal_size,
-				       MAX_FW_RFCAL_DATA_SIZE, 0);
-	if ((ret < 0) || (fw_info->fw_rfcal_size <= 0)) {
-		//RK960_INFO_FW("no rk960_wifi_rfcal.bin file\n");
-	}
-
-	fw_info->fw_size = ALIGN(fw_info->fw_size, 1024);
-	fw_info->fw_rfcal_size = ALIGN(fw_info->fw_rfcal_size, 1024);
-
-	ret = rk960_read_firmware_file(fw_info, "rk960_sdd.txt",
-				       fw_info->sdd_data, &fw_info->sdd_size,
-				       MAX_SDD_BUF_SIZE, 0);
-	if ((ret < 0) || (fw_info->sdd_size <= 0)) {
-		//RK960_INFO_FW("no rk960_sdd.txt file\n");
-	}
-
-	return 0;
-}
-
+#ifndef FW_LOADER_FROM_FOPEN
 static int rk960_get_firmware_info(struct rk960_common *priv,
-                struct firmware_info *fw_info)
+                struct firmware_info *fw_info, enum rk960_download_fw_name_e fw_type)
 {
 	int ret = 0;
 
 	if (fw_info->fw_saved)
 		return 0;
 
-#ifdef FW_LOADER_FROM_FOPEN
-	ret = rk960_get_firmware_from_open(fw_info);
-#else
-        ret = request_firmware(&fw_info->fw_data_r,
-                        "rk960_wifi.bin", priv->pdev);
-        if (ret) {
-                ret = request_firmware(&fw_info->fw_data_r,
-                        "rk960_fw.bin", priv->pdev);
-                if (ret) {
-                        RK960_ERROR_FW("Can't load firmware file %s.\n",
-                                "rk960_wifi.bin");
-                        goto firmware_release;
-                } else {
-                        RK960_INFO_FW("%s: loaded firmware %s\n",
-                                __func__, "rk960_fw.bin");
-                }
-        } else {
-                RK960_INFO_FW("%s: loaded firmware %s\n",
-                        __func__, "rk960_wifi.bin");
-        }
-
-        ret = request_firmware(&fw_info->loder_data_r,
-                        "rk960_wifi_loader.bin", priv->pdev);
-        if (ret) {
-                RK960_ERROR_FW("Can't load firmware file %s.\n",
-                        "rk960_wifi_loader.bin");
-        } else {
-                RK960_INFO_FW("%s: loaded firmware %s\n",
-                        __func__, "rk960_wifi_loader.bin");
-        }
-
-        ret = request_firmware(&fw_info->fw_rfcal_data_r,
-                        "rk960_wifi_rf.bin", priv->pdev);
-        if (ret) {
-                RK960_ERROR_FW("Can't load firmware file %s.\n",
-                        "rk960_wifi_rf.bin");
-        } else {
-                RK960_INFO_FW("%s: loaded firmware %s\n",
-                        __func__, "rk960_wifi_rf.bin");
-        }
-
-        ret = request_firmware(&fw_info->sdd_data_r,
-                        "rk960_sdd.txt", priv->pdev);
-        if (ret) {
-                RK960_ERROR_FW("Can't load firmware file %s.\n",
-                        "rk960_sdd.txt");
-        } else {
-                RK960_INFO_FW("%s: loaded firmware %s\n",
-                        __func__, "rk960_sdd.txt");
-        }
-
-        return 0;
+    switch (fw_type) {
+        case WIFI_FW_LOADER:
+            ret = request_firmware(&fw_info->loder_data_r,
+                            RK96x_LOADER_NAME, priv->pdev);
+            if (ret) {
+                    RK960_ERROR_FW("Can't load firmware file %s.\n",
+                            RK96x_LOADER_NAME);
+            } else {
+                    RK960_INFO_FW("%s: loaded firmware %s\n",
+                            __func__, RK96x_LOADER_NAME);
+            }
+            break;
+        case WIFI_FW_SDD:
+            ret = request_firmware(&fw_info->sdd_data_r,
+                            RK96x_SDD, priv->pdev);
+            if (ret) {
+                    RK960_ERROR_FW("Can't load firmware file %s.\n",
+                            RK96x_SDD);
+            } else {
+                    RK960_INFO_FW("%s: loaded firmware %s\n",
+                            __func__, RK96x_SDD);
+           }
+           break;
+        case WIFI_FW_RF:
+            ret = request_firmware(&fw_info->fw_rfcal_data_r,
+                            fw1_name, priv->pdev);
+            if (ret) {
+                    RK960_ERROR_FW("Can't load firmware file %s.\n",
+                            fw1_name);
+            } else {
+                    RK960_INFO_FW("%s: loaded firmware %s\n",
+                            __func__, fw1_name);
+            }
+            break;
+        case WIFI_FW:
+            ret = request_firmware(&fw_info->fw_data_r,
+                            fw2_name, priv->pdev);
+            if (ret) {
+                    ret = request_firmware(&fw_info->fw_data_r,
+                            RK962_FW2_ALIAS, priv->pdev);
+                    if (ret) {
+                            RK960_ERROR_FW("Can't load firmware file %s.\n",
+                                    fw2_name);
+                            goto firmware_release;
+                    } else {
+                            RK960_INFO_FW("%s: loaded firmware %s\n",
+                                    __func__, RK962_FW2_ALIAS);
+                    }
+            } else {
+                    RK960_INFO_FW("%s: loaded firmware %s\n",
+                            __func__, fw2_name);
+            }
+            break;
+        default:
+            break;
+    }
+    return 0;
 
 firmware_release:
         if (fw_info->loder_data_r)
@@ -452,12 +312,27 @@ firmware_release:
                 release_firmware(fw_info->fw_rfcal_data_r);
         if (fw_info->sdd_data_r)
                 release_firmware(fw_info->sdd_data_r);
+
+    return ret;
+}
 #endif
 
-	return ret;
+static void rk_wifi_update_fw_name(u32 chip_name)
+{
+   if(RK962_EFUSE == chip_name)
+    {
+        fw1_name = RK962_FW1;
+        fw2_name = RK962_FW2;
+    }
+    else
+    {
+        fw1_name = RK960_FW1;
+        fw2_name = RK960_FW2;
+    }
+	RK960_INFO_FW("fw1_name: %s, fw2_name: %s.\n", fw1_name, fw2_name);
 }
 
-static int rk960_get_rom_version(struct rk960_common *priv)
+static int rk960_get_rom_version(struct rk960_common *priv, u16 *rom_version)
 {
 	int ret;
 	struct firmware_info *fw = &priv->firmware;
@@ -472,280 +347,254 @@ static int rk960_get_rom_version(struct rk960_common *priv)
 	RK960_INFO_FW("%s: rom_ver:", __func__);
         print_hex_dump(KERN_INFO, " ", DUMP_PREFIX_NONE,
                 16, 1, fw->buf_data, 10, 1);
+	*rom_version = (fw->buf_data[1]<<8) | (fw->buf_data[0]);
+	RK960_INFO_FW("rom_version: 0x%x.\n", *rom_version);
 	return 0;
 }
 
-int rk960_download_fw(struct rk960_common *priv, int start_fw)
+static int rk960_get_chip_name(struct rk960_common *priv, u32 *chip_name)
 {
-	int ret = -ENOENT;
+	int ret;
 	struct firmware_info *fw = &priv->firmware;
-	int cnt, left_size, write_size, sdio_cmd_addr, write_addr_block_size;
-	struct io_cmd *scmd;
-	int i;
-	bool is_big_fw;
-        int loder_size = 0;
-        unsigned char *loder_data = NULL;
-        int fw_rfcal_size = 0;
-        unsigned char *fw_rfcal_data = NULL;
-        int fw_size = 0;
-        unsigned char *fw_data = NULL;
 
-#ifdef FW_LOADER_FROM_FOPEN
-        fw_size = fw->fw_size;
-#else
-        fw_size = fw->fw_data_r->size;
-#endif
-	is_big_fw = fw_size > 64 * 1024 ? true : false;
-	if (priv->chip_id == RK960_DEVICE_ID_D) {
-		if (is_big_fw)
-			sdio_cmd_addr = SDIO_CMD_ADDR_VER_D;
-		else
-			sdio_cmd_addr = SDIO_CMD_ADDR_VER_ROM;
-		write_addr_block_size = 512;
-	} else {
-		sdio_cmd_addr = SDIO_CMD_ADDR_VER_ABC;
-		write_addr_block_size = 1;
+	memset(fw->buf_data, 0, 24);
+	ret = rk960_reg_read(priv, SDIO_CHIP_NAME_ADDR, fw->buf_data, 20);
+	if (ret) {
+		RK960_ERROR_FW("%s: read rom_ver failed (%d)\n", __func__, ret);
+		return -1;
 	}
 
-	RK960_DEBUG_FW("%s: chip id %x block size %d buf size %d\n",
-		       __func__, priv->chip_id, write_addr_block_size,
-		       fw->buf_size);
+	RK960_INFO_FW("%s: chip_name:", __func__);
+        print_hex_dump(KERN_INFO, " ", DUMP_PREFIX_NONE,
+                16, 1, fw->buf_data, 20, 1);
 
-	scmd = (struct io_cmd *)fw->fw_start_data;
-
-#ifdef FW_LOADER_FROM_FOPEN
-        loder_size = fw->loder_size;
-        loder_data = fw->loder_data;
-#else
-        if (fw->loder_data_r) {
-                loder_size = fw->loder_data_r->size;
-                loder_data = (unsigned char *)fw->loder_data_r->data;
-        }
-#endif
-	//download loader
-	if (!is_big_fw && loder_size) {
-		RK960_INFO_FW("%s: start download loader size: %d\n", __func__,
-			      loder_size);
-		cnt = ((loder_size - 1) / fw->buf_size) + 1;
-		left_size = loder_size;
-		for (i = 0; i < cnt; i++) {
-			if (left_size >= fw->buf_size) {
-				write_size = fw->buf_size;
-			} else if (left_size > 0) {
-				write_size = left_size;
-			} else {
-				break;
-			}
-                        memset(fw->buf_data, 0, fw->buf_size);
-			memcpy(fw->buf_data, loder_data + i * fw->buf_size,
-			       write_size);
-			ret =
-			    rk960_reg_write(priv,
-					    SDIO_LOADER_VCT_ADDR /
-					    write_addr_block_size, fw->buf_data,
-					    ALIGN(write_size, 1024));
-			if (ret) {
-				RK960_ERROR_FW
-				    ("%s: rk960_reg_write failed (%d), write_size = %d\n",
-				     __func__, ret, write_size);
-				goto fail;
-			}
-			left_size -= write_size;
-		}
-
-		//send start CMD to reboot
-		scmd->id = SDIO_START_CMD_ID;
-		scmd->length = 4;
-		scmd->addr = SDIO_LOADER_VCT_ADDR;
-		scmd->code_copy_addr = fw->useful_code_size;
-		ret =
-		    rk960_reg_write(priv, sdio_cmd_addr, (void *)scmd,
-				    sizeof(struct io_cmd));
-		if (ret) {
-			RK960_ERROR_FW("%s: start loader failed (%d)\n",
-				       __func__, ret);
-			goto fail;
-		}
-
-		msleep(10);
-
-		rk960_get_rom_version(priv);
-	}
-
-#ifdef FW_LOADER_FROM_FOPEN
-        fw_rfcal_size = fw->fw_rfcal_size;
-        fw_rfcal_data = fw->fw_rfcal_data;
-#else
-        if (fw->fw_rfcal_data_r) {
-                fw_rfcal_size = fw->fw_rfcal_data_r->size;
-                fw_rfcal_data = (unsigned char *)fw->fw_rfcal_data_r->data;
-        }
-#endif        
-	//download rfcal fw
-	if (!is_big_fw && fw_rfcal_size) {
-		u16 ctrl_reg;
-		int to_count = 500;
-
-		RK960_INFO_FW("%s: start download rfcal firmware size: %d\n",
-			      __func__, fw_rfcal_size);
-		cnt = ((fw_rfcal_size - 1) / fw->buf_size) + 1;
-		left_size = fw_rfcal_size;
-		for (i = 0; i < cnt; i++) {
-			if (left_size >= fw->buf_size) {
-				write_size = fw->buf_size;
-			} else if (left_size > 0) {
-				write_size = left_size;
-			} else {
-				break;
-			}
-                        memset(fw->buf_data, 0, fw->buf_size);
-			memcpy(fw->buf_data,
-			       fw_rfcal_data + i * fw->buf_size,
-			       write_size);
-			ret =
-			    rk960_reg_write(priv,
-					    (i * fw->buf_size) /
-					    write_addr_block_size, fw->buf_data,
-					    ALIGN(write_size, 1024));
-			if (ret) {
-				RK960_ERROR_FW
-				    ("%s: rk960_reg_write failed (%d), write_size = %d\n",
-				     __func__, ret, write_size);
-				goto fail;
-			}
-			left_size -= write_size;
-		}
-
-		//send start CMD to reboot
-		scmd->id = SDIO_START_CMD_ID;
-		scmd->length = 4;
-		scmd->addr = SDIO_FIRMWARE_VCT_ADDR;
-		scmd->code_copy_addr = fw->useful_code_size;
-		ret =
-		    rk960_reg_write(priv, sdio_cmd_addr, (void *)scmd,
-				    sizeof(struct io_cmd));
-		if (ret) {
-			RK960_ERROR_FW("%s: start rfcal fw failed (%d)\n",
-				       __func__, ret);
-			goto fail;
-		}
-		// wait for rfcal complete
-		while (to_count--) {
-			rk960_bh_read_ctrl_reg(priv, &ctrl_reg);
-			if (ctrl_reg) {
-				RK960_INFO_FW("rfcal complete %x\n", ctrl_reg);
-				__rk960_clear_irq(priv);
-				break;
-			}
-			msleep(10);
-		}
-		if (to_count <= 0) {
-			RK960_ERROR_FW("rfcal failed\n");
-			ret = -1;
-			goto fail;
-		}
-	}
-
-        /*ret = rk960_sdio_irq_subscribe(priv->hwbus_priv);
-        if (ret) {
-                goto fail;
-        }*/
-
-#ifdef FW_LOADER_FROM_FOPEN
-        fw_size = fw->fw_size;
-        fw_data = fw->fw_data;
-#else
-        fw_size = fw->fw_data_r->size;
-        fw_data = (unsigned char *)fw->fw_data_r->data;
-#endif         
-	//download fw and read back
-	RK960_INFO_FW("%s: start download firmware size: %d\n", __func__,
-		      fw_size);
-	cnt = ((fw_size - 1) / fw->buf_size) + 1;
-	left_size = fw_size;
-	for (i = 0; i < cnt; i++) {
-		if (left_size >= fw->buf_size) {
-			write_size = fw->buf_size;
-		} else if (left_size > 0) {
-			write_size = left_size;
-		} else {
-			break;
-		}
-                memset(fw->buf_data, 0, fw->buf_size);
-		memcpy(fw->buf_data, fw_data + i * fw->buf_size,
-		       write_size);
-		ret =
-		    rk960_reg_write(priv,
-				    (i * fw->buf_size) / write_addr_block_size,
-				    fw->buf_data, ALIGN(write_size, 1024));
-		if (ret) {
-			RK960_ERROR_FW
-			    ("%s: rk960_reg_write failed (%d), write_size = %d\n",
-			     __func__, ret, write_size);
-			goto fail;
-		}
-#ifdef FW_DOWNLOAD_CHECK
-		ret =
-		    rk960_reg_read(priv,
-				   (i * fw->buf_size) / write_addr_block_size,
-				   fw->buf_data, ALIGN(write_size, 1024));
-		if (ret) {
-			RK960_ERROR_FW("%s: read fw failed (%d)\n", __func__,
-				       ret);
-			goto fail;
-		}
-		memcpy(fw->fw_data_check + i * fw->buf_size, fw->buf_data,
-		       write_size);
-#endif
-		left_size -= write_size;
-	}
-
-#ifdef FW_DOWNLOAD_CHECK
-	//check read back's fw data
-	ret = memcmp(fw_data, fw->fw_data_check, fw_size);
-	if (ret && !priv->fw_error_processing) {
-		RK960_ERROR_FW("%s: check downloaded fw failed\n", __func__);
-		for (i = 0; i < fw_size; i++) {
-			if (fw->fw_data_check[i] != fw_data[i]) {
-				RK960_ERROR_FW
-				    ("Addr: %d, data: 0x%02x,	bad: 0x%02x\n", i,
-				     fw_data[i], fw->fw_data_check[i]);
-			}
-		}
-		ret = -ENOENT;
-		goto fail;
-	} else {
-		RK960_INFO_FW("%s: check downloaded fw ok.\n", __func__);
-	}
-#endif
-
-	//send start CMD to reboot
-	scmd->id = SDIO_START_CMD_ID;
-	scmd->length = 4;
-	scmd->addr = SDIO_FIRMWARE_VCT_ADDR;
-	scmd->code_copy_addr = fw->useful_code_size;
-
-	if (start_fw) {
-		ret =
-	    		rk960_reg_write(priv, sdio_cmd_addr, (void *)scmd,
-			    sizeof(struct io_cmd));
-		if (ret) {
-			RK960_ERROR_FW("%s: start fw failed (%d)\n",
-					__func__, ret);
-			goto fail;
-		}
-		//mdelay(20);
-	} else {
-        	priv->fw_scmd = scmd;
-        	priv->sdio_cmd_addr = sdio_cmd_addr;
-	}
-
-	RK960_INFO_FW("%s: download firmware success\n", __func__);
+	*chip_name = (fw->buf_data[18]<<8) | (fw->buf_data[19]);
+	RK960_INFO_FW("chip_name: 0x%x.\n", *chip_name);
 
 	return 0;
+}
 
-fail:
-	return ret;
+static unsigned int do_js_hash(unsigned int hash, unsigned char *buf, unsigned int len)
+{
+    unsigned int i  = 0;
+
+    for(i = 0; i < len; i++) {
+        hash ^= ((hash << 5) + buf[i] + (hash >> 2));
+    }
+    return hash;
+}
+
+static int rk960_load_and_download_fw(struct rk960_common *priv,
+                                    const char *name,
+                                    int start_fw,
+                                    enum rk960_download_fw_name_e fw_type)
+{
+    int ret = -ENOENT;
+    struct firmware_info *fw = &priv->firmware;
+    struct file *file = NULL;
+    struct io_cmd *scmd;
+    char path[64];
+    int i;
+    int read_size;
+    int total_size = 0;
+    int sdio_cmd_addr, write_addr_block_size;
+#ifdef FW_LOADER_FROM_FOPEN
+    int find = 0;
+#else
+    int load_size = 0;
+    unsigned char *load_data = NULL;
+    int cnt, left_size;
+#endif
+#ifdef FW_DOWNLOAD_CHECK
+    uint32_t hash = 0;
+#endif
+
+#ifdef FW_LOADER_FROM_FOPEN
+    memset(fw->fw_data, 0, fw->fw_size);
+    // Find firmware file
+    for (i = 0; i < ARRAY_SIZE(fw_path); i++) {
+        if (!fw_path[i][0])
+            continue;
+
+        sprintf(path, "%s/%s", fw_path[i], name);
+        file = filp_open(path, O_RDONLY, 0);
+        if (!IS_ERR(file)) {
+            find = 1;
+            break;
+        }
+    }
+
+    if (!find) {
+        RK960_ERROR_FW("%s: can't find %s\n", __func__, name);
+        ret = -ENOENT;
+        goto out;
+    }
+
+    RK960_DEBUG_FW("%s: found %s\n", __func__, path);
+#endif
+    RK960_DEBUG_FW("%s: rk960_get_file_size(path)=%d, fw->buf_size: %d.\n", __func__, rk960_get_file_size(path), fw->buf_size);
+
+    // Configure write parameters based on chip
+    if (priv->chip_id == RK960_DEVICE_ID_D) {
+        sdio_cmd_addr = (fw->buf_size > 64 * 1024) ?
+                       SDIO_CMD_ADDR_VER_D : SDIO_CMD_ADDR_VER_ROM;
+        write_addr_block_size = 512;
+    } else {
+        sdio_cmd_addr = SDIO_CMD_ADDR_VER_ABC;
+        write_addr_block_size = 1;
+    }
+
+#ifndef FW_LOADER_FROM_FOPEN
+    switch (fw_type) {
+        case WIFI_FW_LOADER:
+            if (fw->loder_data_r) {
+                load_size = fw->loder_data_r->size;
+                load_data = (unsigned char *)fw->loder_data_r->data;
+            }
+            break;
+        case WIFI_FW_RF:
+            if (fw->fw_rfcal_data_r) {
+                load_size = fw->fw_rfcal_data_r->size;
+                load_data = (unsigned char *)fw->fw_rfcal_data_r->data;
+            }
+            break;
+        case WIFI_FW:
+            if (fw->fw_data_r) {
+                load_size = fw->fw_data_r->size;
+                load_data = (unsigned char *)fw->fw_data_r->data;
+            }
+            break;
+        default:
+            break;
+    }
+#endif
+    // Read and download firmware in chunks
+    RK960_INFO_FW("Start downloading firmware %s\n", name);
+#ifdef FW_LOADER_FROM_FOPEN
+    while (1) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+        read_size = kernel_read(file, fw->fw_data, fw->fw_size, &file->f_pos);
+#else
+        read_size = kernel_read(file, file->f_pos, fw->fw_data, fw->fw_size);
+        if (read_size > 0)
+            file->f_pos += read_size;
+#endif
+        RK960_INFO_FW("read_size %d\n", read_size);
+        if (read_size <= 0)
+            break;
+        read_size = ALIGN(read_size, 1024);
+#else
+    cnt = ((load_size - 1) / fw->fw_size) + 1;
+    left_size = load_size;
+    for (i = 0; i < cnt; i++) {
+        if (left_size >= fw->fw_size) {
+            read_size = fw->fw_size;
+        } else if (left_size > 0) {
+            read_size = left_size;
+        } else {
+            break;
+        }
+        memset(fw->fw_data, 0, fw->fw_size);
+        memcpy(fw->fw_data, load_data + i * fw->fw_size,
+            read_size);
+        left_size -= read_size;
+#endif
+        if (WIFI_FW_LOADER == fw_type) {
+            // Write loader to device
+            ret = rk960_reg_write(priv,
+                            SDIO_LOADER_VCT_ADDR / write_addr_block_size,
+                            fw->fw_data,
+                            ALIGN(read_size, 1024));
+        } else if ((WIFI_FW_RF == fw_type) || (WIFI_FW == fw_type)) {
+            // Write fw to device
+            ret = rk960_reg_write(priv,
+                            total_size / write_addr_block_size,
+                            fw->fw_data,
+                            ALIGN(read_size, 1024));
+        } else if ((WIFI_FW_SDD == fw_type)) {
+            if(read_size <= fw->sdd_size)
+            {
+                memcpy(fw->sdd_data, fw->fw_data, read_size);
+                goto out;
+            }
+            else
+               RK960_ERROR_FW("%s: file(%s) size %d exceed SDD buf(%d)\n",
+                        __func__, path, read_size, fw->sdd_size);
+            }
+        if (ret) {
+            RK960_ERROR_FW("Write failed (%d), size = %d\n",
+                          ret, read_size);
+            goto out;
+        }
+
+#ifdef FW_DOWNLOAD_CHECK
+        hash = do_js_hash(hash, fw->fw_data, read_size);
+#endif
+        total_size += read_size;
+    }
+
+    fw->useful_code_size = total_size;
+
+    // Prepare and send start command
+    scmd = (struct io_cmd *)fw->fw_start_data;
+#ifdef FW_DOWNLOAD_CHECK
+    scmd->id = BOOTUP_CRC_CMD;
+    scmd->length = 12;
+    scmd->hash_value = hash;
+#else
+    scmd->id = SDIO_START_CMD_ID;
+    scmd->length = 4;
+#endif
+    scmd->addr = (fw_type == WIFI_FW_LOADER) ?
+                 SDIO_LOADER_VCT_ADDR : SDIO_FIRMWARE_VCT_ADDR;
+    scmd->code_copy_addr = fw->useful_code_size;
+
+    if (start_fw) {
+        ret = rk960_reg_write(priv, sdio_cmd_addr, scmd,
+                             sizeof(struct io_cmd));
+        if (ret) {
+            RK960_ERROR_FW("Start firmware failed (%d)\n", ret);
+            goto out;
+        }
+
+        if (fw_type == WIFI_FW_LOADER) {
+            // Get ROM version and chip name after loader
+            u16 rom_version;
+            u32 chip_name;
+            msleep(10);
+            rk960_get_rom_version(priv, &rom_version);
+            rk960_get_chip_name(priv, &chip_name);
+            rk_wifi_update_fw_name(chip_name);
+        } else if (fw_type == WIFI_FW_RF) {
+			u16 ctrl_reg;
+			int to_count = 500;
+			while (to_count--) {
+				rk960_bh_read_ctrl_reg(priv, &ctrl_reg);
+				if (ctrl_reg) {
+					RK960_INFO_FW("rfcal complete %x\n", ctrl_reg);
+					__rk960_clear_irq(priv);
+					break;
+				}
+				msleep(10);
+			}
+			if (to_count <= 0) {
+				RK960_ERROR_FW("rfcal failed\n");
+				ret = -1;
+				goto out;
+			}
+        }
+    } else {
+        priv->fw_scmd = scmd;
+        priv->sdio_cmd_addr = sdio_cmd_addr;
+    }
+
+    RK960_INFO_FW("Firmware download completed successfully.\n");
+
+out:
+    if (file && !IS_ERR(file))
+        filp_close(file, NULL);
+
+    return ret;
 }
 
 int rk960_start_fw(struct rk960_common *priv)
@@ -753,7 +602,7 @@ int rk960_start_fw(struct rk960_common *priv)
         int ret;
         struct io_cmd *scmd = priv->fw_scmd;
         int sdio_cmd_addr = priv->sdio_cmd_addr;
-        
+
 	ret =
 	    rk960_reg_write(priv, sdio_cmd_addr, (void *)scmd,
 			    sizeof(struct io_cmd));
@@ -762,38 +611,56 @@ int rk960_start_fw(struct rk960_common *priv)
                 return -1;
 	}
         RK960_INFO_FW("%s: start fw success\n", __func__);
-        
+
 	//mdelay(20);
 	return 0;
 }
 
 /* return 0 means fw download success, otherwise fail */
-int rk960_load_firmware(struct rk960_common *priv)
+int rk960_load_firmware(struct rk960_common *priv, int start_fw)
 {
-	struct firmware_info *fw_info;
-	int ret;
+    struct firmware_info *fw_info;
+    int ret;
 
 	fw_info = &priv->firmware;
-	if (priv->chip_id == RK960_DEVICE_ID_D) {
-		fw_info->buf_size = MAX_FW_BUF_SIZE_SMALL;
-	} else {
-		fw_info->buf_size = MAX_FW_BUF_SIZE_BIG;
-	}
+    fw_info->fw_size = MAX_FW_BUF_SIZE;
+    fw_info->buf_size = MAX_BUF_SIZE;
 
-	if (rk960_alloc_firmware_buf(fw_info) != 0) {
-		RK960_ERROR_FW("%s: rk960_alloc_firmware_buf failed\n",
-			       __func__);
-		ret = -ENOENT;
-		goto fw_out;
-	}
+	RK960_INFO_FW("%s: priv->chip_id=0x%x,fw_info->buf_size=%d\n",__func__, priv->chip_id, fw_info->buf_size);
 
-	/* get info of firmware and rompatch */
-	if (rk960_get_firmware_info(priv, fw_info)) {
-		RK960_ERROR_FW("%s: get firmeware error!.\n", __func__);
-		ret = -ENOENT;
-		goto fw_out;
-	}
+#ifdef SUPPORT_FWCR
+    if (priv->fw_hotboot)
+        return 0;
+#endif
 
+    if (rk960_alloc_firmware_buf(fw_info) != 0) {
+        RK960_ERROR_FW("Failed to allocate firmware buffer\n");
+        return -ENOMEM;
+    }
+
+#ifndef FW_LOADER_FROM_FOPEN
+    /* get info of loader */
+    if (rk960_get_firmware_info(priv, fw_info, WIFI_FW_LOADER)) {
+        RK960_ERROR_FW("%s: get loader firmeware error!.\n", __func__);
+        ret = -ENOENT;
+        goto fw_out;
+    }
+    /* get info of sdd */
+    if (rk960_get_firmware_info(priv, fw_info, WIFI_FW_SDD)) {
+        RK960_ERROR_FW("%s: get sdd firmeware error!.\n", __func__);
+        ret = -ENOENT;
+        goto fw_out;
+    }
+#endif
+    // Download loader
+    ret = rk960_load_and_download_fw(priv, RK96x_LOADER_NAME, 1, WIFI_FW_LOADER);
+    if (ret)
+        goto fw_out;
+
+    // loader SDD
+    ret = rk960_load_and_download_fw(priv, RK96x_SDD, 0, WIFI_FW_SDD);
+    //if (ret)
+    //    goto fw_out;
 #ifdef FW_LOADER_FROM_FOPEN
 	if (rk960_sdd_parse(priv, fw_info->sdd_data, fw_info->sdd_size)) {
 #else
@@ -808,16 +675,32 @@ int rk960_load_firmware(struct rk960_common *priv)
 	}
 	//fw_info->fw_saved = 1;
 
-#ifdef SUPPORT_FWCR
-        if (priv->fw_hotboot)
-                return 0;
+#ifndef FW_LOADER_FROM_FOPEN
+    /* get info of rf firmware */
+    if (rk960_get_firmware_info(priv, fw_info, WIFI_FW_RF)) {
+        RK960_ERROR_FW("%s: get rf fw error!.\n", __func__);
+        ret = -ENOENT;
+        goto fw_out;
+    }
+    /* get info of rompatch */
+    if (rk960_get_firmware_info(priv, fw_info, WIFI_FW)) {
+        RK960_ERROR_FW("%s: get firmeware error!.\n", __func__);
+        ret = -ENOENT;
+        goto fw_out;
+    }
 #endif
+    // Download RF calibration firmware
+    ret = rk960_load_and_download_fw(priv, fw1_name, 1, WIFI_FW_RF);
+    if (ret)
+        goto fw_out;
 
-	ret = rk960_download_fw(priv, 0);
-	if (!ret)
-		return ret;
+    // Download main firmware
+    ret = rk960_load_and_download_fw(priv, fw2_name, start_fw, WIFI_FW);
+    if (ret)
+        goto fw_out;
 
+    return ret;
 fw_out:
-	rk960_free_firmware_buf(fw_info);
-	return ret;
+    rk960_free_firmware_buf(fw_info);
+    return ret;
 }

@@ -521,7 +521,7 @@ void rk960_enable_powersave(struct rk960_vif *priv, bool enable)
 #endif
 
 #if USE_SDIO_RX_BURST_MULTI
-static void hwbus_rcvbuf_init(struct rk960_common *hw_priv)
+void hwbus_rcvbuf_init(struct rk960_common *hw_priv)
 {
 	int i;
 	struct wsm_hdr *wsm;
@@ -563,19 +563,31 @@ static u8 *hwbus_rcvbuf_next_msg(struct rk960_common *hw_priv, u16 * next_len)
 #endif
 
 #if USE_SDIO_TX_BURST_MULTI
-static int hwbus_sndbuf_send(struct rk960_common *hw_priv)
+static int hwbus_sndbuf_send(struct rk960_common *hw_priv, int vif_selected)
 {
+	int ret = 0;
+
 	if (hw_priv->sndbuf_offset) {
 		//pr_info("%s: %d(%d)\n", __func__, hw_priv->sndbuf_offset,
 		//                      hw_priv->sndbuf_offset/RK960_SDIO_TX_MSG_SIZE);
 		if (WARN_ON(rk960_data_write(hw_priv,
 					     hw_priv->hwbus_sndbuf,
 					     hw_priv->sndbuf_offset))) {
-			return -1;
+#ifdef RK960_FW_ERROR_RECOVERY
+			int count = hw_priv->sndbuf_tx_count;
+
+			if (vif_selected != -1)
+				hw_priv->hw_bufs_used_vif[vif_selected]++;
+			wsm_release_tx_buffer(hw_priv, count);
+			rk960_signal_fw_error(hw_priv,
+							RK960_FWERR_REASON_SDIO);
+#endif
+			ret = -1;
 		}
 		hw_priv->sndbuf_offset = 0;
+		hw_priv->sndbuf_tx_count = 0;
 	}
-	return 0;
+	return ret;
 }
 #endif
 
@@ -711,15 +723,30 @@ static int rk960_bh(void *arg)
 		    && !hw_priv->device_can_sleep
 		    && !atomic_read(&hw_priv->recent_scan)
 		    && !status) {
-			status = 1 * HZ;
+#ifdef SUPPORT_RK962_POWERSAVE
+			status = 1 * HZ / 50;    //false == hw_priv->device_can_sleep
+#else
+			status = 1 * HZ;    //false == hw_priv->device_can_sleep
+#endif
 			RK960_DEBUG_BH("[BH] No Device wakedown.\n");
 			rk960_device_wakeup(hw_priv, 0);
 			hw_priv->device_can_sleep = true;
-		} else if (hw_priv->hw_bufs_used)
+		} else if (hw_priv->hw_bufs_used) {
 			/* Interrupt loss detection */
-			status = 1 * HZ;
-		else
-			status = 1 * HZ;	//MAX_SCHEDULE_TIMEOUT;
+#ifdef SUPPORT_RK962_POWERSAVE
+			if(false == hw_priv->device_can_sleep)
+				status = 1 * HZ / 50;
+			else
+#endif
+				status = 1 * HZ;
+		} else {
+#ifdef SUPPORT_RK962_POWERSAVE
+			if(false == hw_priv->device_can_sleep)
+				status = 1 * HZ / 50;
+			else
+#endif
+				status = 1 * HZ;	//MAX_SCHEDULE_TIMEOUT;
+		}
 
 #if 0
 		/* Dummy Read for SDIO retry mechanism */
@@ -1246,11 +1273,14 @@ tx:
 					       tx_len);
 					hw_priv->sndbuf_offset +=
 					    RK960_SDIO_TX_MSG_SIZE;
+					hw_priv->sndbuf_tx_count++;
 					if (hw_priv->sndbuf_offset ==
 					    EFFECTIVE_TX_BUF_SIZE)
-						hwbus_sndbuf_send(hw_priv);
+						if (hwbus_sndbuf_send(hw_priv, vif_selected) != 0)
+							continue;
 				} else {
-					hwbus_sndbuf_send(hw_priv);
+					if (hwbus_sndbuf_send(hw_priv, vif_selected) != 0)
+						continue;
 #endif
 					if (WARN_ON(rk960_data_write(hw_priv,
 								     data,
@@ -1329,7 +1359,8 @@ tx:
 			}
 		}
 #if USE_SDIO_TX_BURST_MULTI
-		hwbus_sndbuf_send(hw_priv);
+		if (hwbus_sndbuf_send(hw_priv, -1) != 0)
+			continue;
 #endif
 		if (ctrl_reg & ST90TDS_CONT_NEXT_LEN_MASK)
 			goto rx;

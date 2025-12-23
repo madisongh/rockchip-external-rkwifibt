@@ -2176,7 +2176,7 @@ void rtw_surveydone_event_callback(_adapter	*adapter, u8 *pbuf)
 	} else {
 		if (rtw_chk_roam_flags(adapter, RTW_ROAM_ACTIVE)
 		#if (defined(CONFIG_RTW_WNM) && defined(CONFIG_RTW_80211R))
-			|| rtw_wnm_btm_roam_triggered(adapter)
+			|| rtw_ft_chk_flags((adapter), RTW_FT_BTM_ROAM)
 		#endif
 		) {
 			if (check_fwstate(pmlmepriv, WIFI_STATION_STATE)
@@ -2621,6 +2621,10 @@ void rtw_indicate_disconnect(_adapter *padapter, u16 reason, u8 locally_generate
 			rtw_tx_control_cmd(padapter);
 		}
 #endif
+
+		#ifdef CONFIG_LAYER2_ROAMING
+		pmlmepriv->roam_network = NULL;
+		#endif
 
 		rtw_os_indicate_disconnect(padapter, reason, locally_generated);
 
@@ -3403,7 +3407,6 @@ exit:
 void rtw_sta_timeout_event_callback(_adapter *adapter, u8 *pbuf)
 {
 #ifdef CONFIG_AP_MODE
-	_irqL irqL;
 	struct sta_info *psta;
 	struct stadel_event *pstadel = (struct stadel_event *)pbuf;
 	struct sta_priv *pstapriv = &adapter->stapriv;
@@ -3413,17 +3416,12 @@ void rtw_sta_timeout_event_callback(_adapter *adapter, u8 *pbuf)
 	if (psta) {
 		u8 updated = _FALSE;
 
-		_enter_critical_bh(&pstapriv->asoc_list_lock, &irqL);
+		rtw_stapriv_asoc_list_lock(pstapriv);
 		if (rtw_is_list_empty(&psta->asoc_list) == _FALSE) {
-			rtw_list_delete(&psta->asoc_list);
-			pstapriv->asoc_list_cnt--;
-			#ifdef CONFIG_RTW_TOKEN_BASED_XMIT
-			if (psta->tbtx_enable)
-				pstapriv->tbtx_asoc_list_cnt--;
-			#endif
+			rtw_stapriv_asoc_list_del(pstapriv, psta);
 			updated = ap_free_sta(adapter, psta, _TRUE, WLAN_REASON_PREV_AUTH_NOT_VALID, _TRUE);
 		}
-		_exit_critical_bh(&pstapriv->asoc_list_lock, &irqL);
+		rtw_stapriv_asoc_list_unlock(pstapriv);
 
 		associated_clients_update(adapter, updated, STA_INFO_UPDATE_ALL);
 	}
@@ -4906,11 +4904,11 @@ int rtw_cached_pmkid(_adapter *Adapter, u8 *bssid)
 	return SecIsInPMKIDList(Adapter, bssid);
 }
 
-int rtw_rsn_sync_pmkid(_adapter *adapter, u8 *ie, uint ie_len, int i_ent)
+int rtw_pmkid_sync_rsn(_adapter *adapter, u8 *ie, uint ie_len, int i_ent)
 {
+	struct mlme_priv *pmlmepriv = &adapter->mlmepriv;
 	struct security_priv *sec = &adapter->securitypriv;
 	struct rsne_info info;
-	u8 gm_cs[4];
 	int i;
 
 	rtw_rsne_info_parse(ie, ie_len, &info);
@@ -4924,48 +4922,32 @@ int rtw_rsn_sync_pmkid(_adapter *adapter, u8 *ie, uint ie_len, int i_ent)
 	if (i_ent < 0 && info.pmkid_cnt == 0)
 		goto exit;
 
-	if (info.pmkid_list == NULL)
-		goto exit;
-
 	if (i_ent >= 0 && info.pmkid_cnt == 1 && _rtw_memcmp(info.pmkid_list, sec->PMKIDList[i_ent].PMKID, 16)) {
 		RTW_INFO(FUNC_ADPT_FMT" has carried the same PMKID:"KEY_FMT"\n"
 			, FUNC_ADPT_ARG(adapter), KEY_ARG(&sec->PMKIDList[i_ent].PMKID));
 		goto exit;
 	}
 
-	/* bakcup group mgmt cs */
-	if (info.gmcs)
-		_rtw_memcpy(gm_cs, info.gmcs, 4);
-
-	if (info.pmkid_cnt) {
-		RTW_INFO(FUNC_ADPT_FMT" remove original PMKID, count:%u\n"
-			 , FUNC_ADPT_ARG(adapter), info.pmkid_cnt);
+	if (info.pmkid_cnt && pmlmepriv->assoc_by_bssid) {
+		RTW_INFO(FUNC_ADPT_FMT " update PMKID list, count:%u\n", FUNC_ADPT_ARG(adapter), info.pmkid_cnt);
 		for (i = 0; i < info.pmkid_cnt; i++)
-			RTW_INFO("    "KEY_FMT"\n", KEY_ARG(info.pmkid_list + i * 16));
+			RTW_INFO("    " KEY_FMT "\n", KEY_ARG(info.pmkid_list + i * 16));
+
+		/* add pmkid in list */
+		_rtw_memcpy(sec->PMKIDList[sec->PMKIDIndex].Bssid, pmlmepriv->assoc_bssid, ETH_ALEN);
+		_rtw_memcpy(sec->PMKIDList[sec->PMKIDIndex].PMKID, info.pmkid_list, WLAN_PMKID_LEN);
+
+		sec->PMKIDList[sec->PMKIDIndex].bUsed = _TRUE;
+		sec->PMKIDIndex++;
+		if (sec->PMKIDIndex == 16)
+			sec->PMKIDIndex = 0;
+	} else if (i_ent >= 0) {
+		RTW_INFO(FUNC_ADPT_FMT " remove PMKID list", FUNC_ADPT_ARG(adapter));
+		/* remove pmkid in list */
+		_rtw_memset(sec->PMKIDList[i_ent].Bssid, 0x00, ETH_ALEN);
+		_rtw_memset(sec->PMKIDList[i_ent].PMKID, 0x00, WLAN_PMKID_LEN);
+		sec->PMKIDList[i_ent].bUsed = _FALSE;
 	}
-
-	if (i_ent >= 0) {
-		RTW_INFO(FUNC_ADPT_FMT" append PMKID:"KEY_FMT"\n"
-			, FUNC_ADPT_ARG(adapter), KEY_ARG(sec->PMKIDList[i_ent].PMKID));
-
-		info.pmkid_cnt = 1; /* update new pmkid_cnt */
-		_rtw_memcpy(info.pmkid_list, sec->PMKIDList[i_ent].PMKID, 16);
-	} else
-		info.pmkid_cnt = 0; /* update new pmkid_cnt */
-
-	RTW_PUT_LE16(info.pmkid_list - 2, info.pmkid_cnt);
-	if (info.gmcs)
-		_rtw_memcpy(info.pmkid_list + 16 * info.pmkid_cnt, gm_cs, 4);
-
-	ie_len = 1 + 1 + 2 + 4
-		+ 2 + 4 * info.pcs_cnt
-		+ 2 + 4 * info.akm_cnt
-		+ 2
-		+ 2 + 16 * info.pmkid_cnt
-		+ (info.gmcs ? 4 : 0)
-		;
-	
-	ie[1] = (u8)(ie_len - 2);
 
 exit:
 	return ie_len;
@@ -5007,7 +4989,7 @@ sint rtw_restruct_sec_ie(_adapter *adapter, u8 *out_ie)
 
 	if (authmode == WLAN_EID_RSN) {
 		iEntry = SecIsInPMKIDList(adapter, pmlmepriv->assoc_bssid);
-		ielength = rtw_rsn_sync_pmkid(adapter, out_ie, ielength, iEntry);
+		ielength = rtw_pmkid_sync_rsn(adapter, out_ie, ielength, iEntry);
 	}
 
 	if ((psecuritypriv->auth_type == MLME_AUTHTYPE_SAE) &&

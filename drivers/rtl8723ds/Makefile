@@ -14,6 +14,20 @@ EXTRA_CFLAGS += -Wno-unused-variable
 #EXTRA_CFLAGS += -Wno-unused-function
 #EXTRA_CFLAGS += -Wno-unused
 #EXTRA_CFLAGS += -Wno-uninitialized
+EXTRA_CFLAGS += -w
+
+############ ANDROID COMMON KERNEL ############
+# clang
+ifeq ($(CC), clang)
+EXTRA_CFLAGS += -Wno-uninitialized
+EXTRA_CFLAGS += -Wno-enum-conversion
+EXTRA_CFLAGS += -Wno-fortify-source
+EXTRA_CFLAGS += -Wno-invalid-source-encoding
+EXTRA_CFLAGS += -Wno-tautological-pointer-compare
+EXTRA_CFLAGS += -Wno-tautological-overlap-compare
+EXTRA_CFLAGS += -Wno-pointer-bool-conversion
+EXTRA_CFLAGS += -Wno-misleading-indentation
+endif
 
 GCC_VER_49 := $(shell echo `$(CC) -dumpversion | cut -f1-2 -d.` \>= 4.9 | bc )
 ifeq ($(GCC_VER_49),1)
@@ -90,8 +104,6 @@ CONFIG_IP_R_MONITOR = n #arp VOQ and high rate
 # user priority mapping rule : tos, dscp
 CONFIG_RTW_UP_MAPPING_RULE = tos
 CONFIG_RTW_MBO = n
-# AMSDU in security network
-CONFIG_SEC_AMSDU_MODE = non-spp
 ########################## Android ###########################
 # CONFIG_RTW_ANDROID - 0: no Android, 4/5/6/7/8/9/10/11 : Android version
 CONFIG_RTW_ANDROID = 0
@@ -1333,14 +1345,6 @@ EXTRA_CFLAGS += -DCONFIG_RTW_MBO -DCONFIG_RTW_80211K -DCONFIG_RTW_WNM -DCONFIG_R
 EXTRA_CFLAGS += -DCONFIG_RTW_80211R
 endif
 
-ifeq ($(CONFIG_SEC_AMSDU_MODE), non-spp)
-EXTRA_CFLAGS += -DRTW_AMSDU_MODE=0
-else ifeq ($(CONFIG_SEC_AMSDU_MODE), spp)
-EXTRA_CFLAGS += -DRTW_AMSDU_MODE=1
-else ifeq ($(CONFIG_SEC_AMSDU_MODE), disable)
-EXTRA_CFLAGS += -DRTW_AMSDU_MODE=2
-endif
-
 ifeq ($(CONFIG_PLATFORM_I386_PC), y)
 EXTRA_CFLAGS += -DCONFIG_LITTLE_ENDIAN
 EXTRA_CFLAGS += -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT
@@ -2256,10 +2260,13 @@ endif
 ARCH ?= arm64
 CROSS_COMPILE ?= /4.4_S905L_8822bs_compile/gcc-linaro-aarch64-linux-gnu-4.9-2014.09_linux/bin/aarch64-linux-gnu-
 ifndef KSRC
-KSRC := /4.4_S905L_8822bs_compile/common
+############ ANDROID COMMON KERNEL ############
+KSRC := $(KERNEL_SRC)
+#KSRC := /4.4_S905L_8822bs_compile/common
 # To locate output files in a separate directory.
-KSRC += O=/4.4_S905L_8822bs_compile/KERNEL_OBJ
+#KSRC += O=/4.4_S905L_8822bs_compile/KERNEL_OBJ
 endif
+
 
 ifeq ($(CONFIG_RTL8822B), y)
 ifeq ($(CONFIG_SDIO_HCI), y)
@@ -2309,6 +2316,15 @@ ifeq ($(CONFIG_CUSTOMER_HUAWEI), y)
 EXTRA_CFLAGS += -DCONFIG_HUAWEI_PROC
 endif
 
+############ ANDROID COMMON KERNEL ############
+export M ?= $(shell pwd)
+export OUT_DIR ?= $(shell pwd)
+ifneq ($(LLVM),)
+export CC_STRIP = llvm-strip
+else
+export CC_STRIP = $(CROSS_COMPILE)strip
+endif
+
 CONFIG_PLATFORM_CMAP_INTFS = n
 ifeq ($(CONFIG_PLATFORM_CMAP_INTFS), y)
 PLATFORM_CMAP_INTFS_TYPE = 00
@@ -2340,7 +2356,6 @@ MODULE_NAME := $(USER_MODULE_NAME)
 endif
 
 ifneq ($(KERNELRELEASE),)
-
 export CONFIG_RTL8723DS = m
 
 ########### this part for *.mk ############################
@@ -2461,10 +2476,11 @@ export CONFIG_RTL8723DS = m
 all: modules
 
 modules:
-	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -C $(KSRC) M=$(shell pwd)  modules
+	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -C $(KSRC) M=$(M)  modules
+#	$(CC_STRIP) --strip-unneeded ${OUT_DIR}/$(M)/$(MODULE_NAME).ko
 
 strip:
-	$(CROSS_COMPILE)strip $(MODULE_NAME).ko --strip-unneeded
+	$(CC_STRIP) $(MODULE_NAME).ko --strip-unneeded
 
 install:
 	install -p -m 644 $(MODULE_NAME).ko  $(MODDESTDIR)
@@ -2473,6 +2489,12 @@ install:
 uninstall:
 	rm -f $(MODDESTDIR)/$(MODULE_NAME).ko
 	/sbin/depmod -a ${KVER}
+
+modules_install:
+	$(MAKE) INSTALL_MOD_STRIP=1 M=$(M) -C $(KSRC) modules_install
+#	mkdir -p ${OUT_DIR}/../vendor_lib/modules
+#	cd ${OUT_DIR}/$(M)/; find -name $(MODULE_NAME).ko -exec cp {} ${OUT_DIR}/../vendor_lib/modules/ \;
+
 
 backup_rtlwifi:
 	@echo "Making backup rtlwifi drivers"
@@ -2531,3 +2553,21 @@ clean:
 	rm -fr .tmp_versions
 endif
 
+
+############ ANDROID COMMON KERNEL ############
+# Convert to absolute path
+ifneq ($(srctree),)
+_EXTRA_CFLAGS :=
+_INC_CFLAGS :=
+$(foreach flag,$(EXTRA_CFLAGS),\
+ $(if $(shell echo $(flag) | grep "\-I"),\
+  $(eval _INC_CFLAGS += $(flag)),\
+  $(eval _EXTRA_CFLAGS += $(flag))\
+ )\
+)
+_INC_CFLAGS := \
+$(foreach flag,$(subst -I,,$(_INC_CFLAGS)),\
+ $(shell if test -d $(srctree)/$(flag); then echo -I$$(cd $(srctree)/$(flag) && pwd); else echo -I$(flag); fi)\
+)
+EXTRA_CFLAGS := $(_EXTRA_CFLAGS) $(_INC_CFLAGS)
+endif

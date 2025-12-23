@@ -110,6 +110,11 @@
                 }                                                               \
         } while (0)
 
+#ifdef SUPPORT_RK962_POWERSAVE
+static u16 rk960_keepalive_confirm = 0;
+module_param(rk960_keepalive_confirm, ushort, 0644);
+MODULE_PARM_DESC(rk960_keepalive_confirm, "rk960 keepalive confirm");
+#endif
 static void wsm_buf_reset(struct wsm_buf *buf);
 static int wsm_buf_reserve(struct wsm_buf *buf, size_t extra_size);
 static int get_interface_id_scanning(struct rk960_common *hw_priv);
@@ -156,6 +161,10 @@ char *wsm_conv_req_resp_to_str(int id)
 		return "WSM_MEM_RW_REQ";
 	case 0x0801:
 		return "WSM_STARTUP_IND";
+	case 0x0003:
+		return "WSM_HI_GENERIC_REQ";
+	case 0x0403:
+		return "WSM_HI_GENERIC_RESP";
 	case 0x0803:
 		return "WSM_GENERIC_IND";
 	case 0x0009:
@@ -258,6 +267,8 @@ char *wsm_conv_req_resp_to_str(int id)
 		return "WSM_SUS_RES_IND";
 	case 0x0810:
 		return "WSM_SCHED_SCAN_COMPLETE_IND";
+	case 0x0811:
+		return "WSM_TCP_KEEPALIVE_READY_IND";
 	default:
 		return "UNKNOW";
 	}
@@ -391,7 +402,7 @@ static int wsm_write_mib_cmd_save(struct rk960_common *hw_priv,
 		if_id = 0;
 	if (mibId == WSM_MIB_ID_TEMPLATE_FRAME) {
 		idx = *((u8 *) _buf);
-		BUG_ON(idx >= 8);
+		BUG_ON(idx >= 9);
 		cmd = &cmds->wsm_wmib_tem_fra_cmd[if_id][idx];
 	} else {
 		idx = mibId & 0xfff;
@@ -781,6 +792,24 @@ underflow:
 	return -EINVAL;
 }
 
+#ifdef SUPPORT_RK962_POWERSAVE
+static int wsm_generic_confirm2(struct rk960_common *hw_priv,
+			       void *arg, struct wsm_buf *buf)
+{
+	u32 status = WSM_GET32(buf);
+	status = WSM_GET32(buf);
+	if (status != WSM_STATUS_SUCCESS) {
+		RK960_ERROR_WSM("%s: failed (status %d)\n", __func__, status);
+		return -EINVAL;
+	}
+	return 0;
+
+underflow:
+	WARN_ON(1);
+	return -EINVAL;
+}
+#endif
+
 int wsm_configuration(struct rk960_common *hw_priv,
 		      struct wsm_configuration *arg, int if_id)
 {
@@ -1052,6 +1081,61 @@ static int wsm_write_mib_confirm(struct rk960_common *hw_priv,
 	return 0;
 }
 
+#ifdef SUPPORT_RK962_POWERSAVE
+/*WSM_MIB_ID_TEMPLATE_FRAME, quzz add*/
+/*
+ * 4.11 TemplateFrame
+ */
+int wsm_write_template_frame(struct rk960_common *hw_priv, void *_buf, size_t buf_size, int if_id)
+{
+	int ret;
+
+    RK960_INFO_WSM("%s \n",__func__);
+	ret = wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, _buf,
+			     buf_size, if_id);
+	return ret;
+}
+
+/*quzz add SYS_HiGenericRequest, from hal_apollo/wsm.c*/
+int wsm_generic_req(struct rk960_common *hw_priv,const struct wsm_gen_req *req,int if_id)
+{
+	int ret;
+	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
+	WARN_ON(req->req_len%4);
+	//RK960_INFO_WSM("%s: req->req_id = %d,req->req_len = %d\n", __func__, req->req_id, req->req_len);
+
+	wsm_cmd_lock(hw_priv);
+
+	WSM_PUT32(buf, req->req_id);
+	WSM_PUT(buf, req->params, req->req_len);
+
+#if 0
+	WSM_PUT32(buf, HI_GEN_REQ_TCPKEEPALIVE_REQ_ID);
+	WSM_PUT(buf, _buf, buf_size);
+#endif
+	ret = wsm_cmd_send(hw_priv, buf, NULL, WSM_GENERIC_REQ_ID, WSM_CMD_TIMEOUT, if_id);
+	wsm_cmd_unlock(hw_priv);
+	return ret;
+
+nomem:
+	wsm_cmd_unlock(hw_priv);
+	return -ENOMEM;
+}
+
+/*WSM_MIB_ID_TEMPLATE_FRAME, quzz add*/
+/*
+ * 4.11 TemplateFrame
+ */
+int wsm_write_wpa_sm(struct rk960_common *hw_priv, void *_buf, size_t buf_size, int if_id)
+{
+    int ret;
+
+    RK960_INFO_WSM("%s \n",__func__);
+    ret = wsm_write_mib(hw_priv, WSM_MIB_ID_SET_WPA_SM, _buf,
+                 buf_size, if_id);
+    return ret;
+}
+#endif
 int wsm_set_csync_thr(struct rk960_common *hw_priv, s8 csync, int if_id)
 {
 #ifdef RK960_CSYNC_ADJUST
@@ -1063,8 +1147,11 @@ int wsm_set_csync_thr(struct rk960_common *hw_priv, s8 csync, int if_id)
 	RK960_DEBUG_WSM("%s: %d\n", __func__, csync);
 	arg.csync = csync;
 	hw_priv->fw_csync = csync;
+	/* Remove the csync restriction for chong.feng*/
+	#if 0
 	if (csync <= -80)
 		arg.csync = 0;
+	#endif
 	return wsm_write_mib(hw_priv, WSM_MIB_ID_SET_CSYNC_THR,
 			     &arg, sizeof(arg), if_id);
 #else
@@ -2117,7 +2204,7 @@ static int wsm_receive_indication(struct rk960_common *hw_priv,
 			rx.rcpiRssi = rx.rcpiRssi / 2 - 110;
 
 		rssi = rx.rcpiRssi;
-		RK960_INFO_WSM("%s: id %d sta %d ch %d rate %d rssi %d"
+		RK960_DEBUG_WSM("%s: id %d sta %d ch %d rate %d rssi %d"
 			       " flag %x link_id %d if_id %d\n",
 			       __func__, interface_link_id, rx.status,
 			       rx.channelNumber, rx.rxedRate, rssi, rx.flags,
@@ -2369,6 +2456,28 @@ underflow:
 	return -EINVAL;
 }
 
+#ifdef SUPPORT_RK962_POWERSAVE
+static int wsm_tcp_keepalive_ready_indication(struct rk960_common *hw_priv,
+					struct wsm_buf *buf)
+{
+	u32 indicationid = 0;
+#ifdef ROAM_OFFLOAD
+	if (hw_priv->auto_scanning == 0)
+		wsm_oper_unlock(hw_priv);
+#else
+	wsm_oper_unlock(hw_priv);
+#endif /*ROAM_OFFLOAD */
+
+	indicationid = WSM_GET32(buf);
+	if (1 == indicationid) {
+		rk960_keepalive_confirm = 0x1;
+	}
+	return 0;
+
+underflow:
+	return -EINVAL;
+}
+#endif
 /* ******************************************************************** */
 /* WSM TX								*/
 
@@ -2380,7 +2489,7 @@ int wsm_cmd_send(struct rk960_common *hw_priv,
 
 #if 1
 	if (cmd == 0x0006)	/* Write MIB */
-		RK960_INFO_WSM
+		RK960_DEBUG_WSM
 		    ("[WSM] >>> %s 0x%.4X [MIB: 0x%.4X] (%d) %d %d %d\n",
 		     wsm_conv_req_resp_to_str(cmd), cmd,
 		     __le16_to_cpu(((__le16 *) buf->begin)[2]), (int)buf_len,
@@ -2388,14 +2497,19 @@ int wsm_cmd_send(struct rk960_common *hw_priv,
 								     &hw_priv->
 								     msg_idx));
 	else
-		RK960_INFO_WSM("[WSM] >>> %s 0x%.4X (%d) %d %d %d\n",
+		RK960_DEBUG_WSM("[WSM] >>> %s 0x%.4X (%d) %d %d %d\n",
 			       wsm_conv_req_resp_to_str(cmd), cmd, (int)buf_len,
 			       if_id, hw_priv->hw_bufs_used,
 			       atomic_add_return(1, &hw_priv->msg_idx));
 #endif
 //    if (cmd == 0x0007)
 //        pr_info("scan\n");
-
+#ifdef SUPPORT_RK962_POWERSAVE
+    if (cmd == 0x000C) {
+        queue_delayed_work(hw_priv->workqueue, &hw_priv->rk960_wpa_sm_timeout, 0);
+        RK960_INFO_WSM("CALL priv->rk960_wpa_sm_timeout. !!!");
+    }
+#endif
 #ifdef SUPPORT_FWCR
         if (hw_priv->fwcr_recovery) {
                 RK960_INFO_WSM("[WSM] <<< skip\n");
@@ -2406,6 +2520,15 @@ int wsm_cmd_send(struct rk960_common *hw_priv,
                         wsm_oper_unlock(hw_priv);
                 }
                 return 0;
+        }
+
+        if (cmd == 0x000C)
+        {
+            hw_priv->fwcr_encrypt_ap = 1;
+            RK960_INFO_WSM("%s, fwcr_encrypt_ap %d\n", __func__, hw_priv->fwcr_encrypt_ap);
+        } else if (cmd == 0x000D) {
+            hw_priv->fwcr_encrypt_ap = 0;
+            RK960_INFO_WSM("%s, fwcr_encrypt_ap %d\n", __func__, hw_priv->fwcr_encrypt_ap);
         }
 #endif
 
@@ -2830,7 +2953,7 @@ int wsm_handle_rx(struct rk960_common *hw_priv, int id,
 	wsm_buf.end = &wsm_buf.begin[__le32_to_cpu(wsm->len)];
 
 #if 1
-	RK960_INFO_WSM("[WSM] <<< %s 0x%.4X (%d) lid %d %d %d\n",
+	RK960_DEBUG_WSM("[WSM] <<< %s 0x%.4X (%d) lid %d %d %d\n",
 		       wsm_conv_req_resp_to_str(id), id,
 		       (int)(wsm_buf.end - wsm_buf.begin),
 		       interface_link_id,
@@ -2954,6 +3077,16 @@ int wsm_handle_rx(struct rk960_common *hw_priv, int id,
 						"failed for request 0x%.4X.\n",
 						id & ~0x0400);
 			break;
+#ifdef SUPPORT_RK962_POWERSAVE
+		case 0x0403:	/* wsm_generic_req */
+			WARN_ON(wsm_arg != NULL);
+			ret = wsm_generic_confirm2(hw_priv, wsm_arg, &wsm_buf);
+			if (ret)
+				RK960_ERROR_WSM("wsm_generic_confirm2 "
+						"failed for request 0x%.4X.\n",
+						id & ~0x0400);
+			break;
+#endif
 		default:
 			BUG_ON(1);
 		}
@@ -3055,6 +3188,11 @@ int wsm_handle_rx(struct rk960_common *hw_priv, int id,
 						   &hw_priv->scan.
 						   sched_scan_stop_work, 0);
 			}
+			break;
+#endif
+#ifdef SUPPORT_RK962_POWERSAVE
+		case 0x0811:
+			ret = wsm_tcp_keepalive_ready_indication(hw_priv, &wsm_buf);
 			break;
 #endif
 		default:
@@ -3387,9 +3525,9 @@ static int rk960_get_prio_queue(struct rk960_vif *priv,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 		    (get_random_u16() & 0xFFFF);
-#else	
+#else
 		    (get_random_int() & 0xFFFF);
-#endif		
+#endif
 #else
 		    (random32() & 0xFFFF);
 #endif
@@ -3730,7 +3868,7 @@ int wsm_get_tx(struct rk960_common *hw_priv, u8 ** data,
 					    (IEEE80211_FCTL_MOREDATA);
 				}
 			}
-			RK960_INFO_WSM
+			RK960_DEBUG_WSM
 			    ("[WSM] >>> WSM_TX_REQ 0x%.4X (%d) pid %x %d %c %d %d\n",
 			     0x0004, (int)*tx_len, wsm->packetID, priv->if_id,
 			     wsm->more ? 'M' : ' ', hw_priv->hw_bufs_used,

@@ -1442,7 +1442,6 @@ void rtw_mi_buddy_clone_bcmc_packet(_adapter *padapter, union recv_frame *precvf
 
 }
 
-#ifdef CONFIG_PCI_HCI
 /*API be created temporary for MI, caller is interrupt-handler, PCIE's interrupt handler cannot apply to multi-AP*/
 _adapter *rtw_mi_get_ap_adapter(_adapter *padapter)
 {
@@ -1462,7 +1461,6 @@ _adapter *rtw_mi_get_ap_adapter(_adapter *padapter)
 	}
 	return iface;
 }
-#endif
 
 u8 rtw_mi_get_ld_sta_ifbmp(_adapter *adapter)
 {
@@ -1501,6 +1499,27 @@ u8 rtw_mi_get_ap_mesh_ifbmp(_adapter *adapter)
 	}
 
 	return ifbmp;
+}
+
+u8 rtw_mi_get_ap_mesh_ifbmp_by_hwband(struct dvobj_priv *dvobj, u8 band_idx)
+{
+	/* this driver has only one hwband, bypass band_idx */
+	return rtw_mi_get_ap_mesh_ifbmp(dvobj_get_primary_adapter(dvobj));
+}
+
+_adapter *rtw_mi_get_ap_mesh_iface_by_hwband(struct dvobj_priv *dvobj, u8 band_idx)
+{
+	u8 ifbmp = rtw_mi_get_ap_mesh_ifbmp_by_hwband(dvobj, band_idx);
+
+	if (ifbmp) {
+		int i;
+
+		for (i = 0; i < dvobj->iface_nums; i++) {
+			if ((ifbmp & BIT(i)) && dvobj->padapters[i])
+				return dvobj->padapters[i];
+		}
+	}
+	return NULL;
 }
 
 void rtw_mi_update_ap_bmc_camid(_adapter *padapter, u8 camid_a, u8 camid_b)

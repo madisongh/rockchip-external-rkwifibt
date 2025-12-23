@@ -292,14 +292,11 @@ _adapter *rtw_get_iface_by_macddr(_adapter *padapter, const u8 *mac_addr);
 _adapter *rtw_get_iface_by_hwport(_adapter *padapter, u8 hw_port);
 
 void rtw_mi_buddy_clone_bcmc_packet(_adapter *padapter, union recv_frame *precvframe, u8 *pphy_status);
-
-#ifdef CONFIG_PCI_HCI
-/*API be create temporary for MI, caller is interrupt-handler, PCIE's interrupt handler cannot apply to multi-AP*/
 _adapter *rtw_mi_get_ap_adapter(_adapter *padapter);
-#endif
 
 u8 rtw_mi_get_ld_sta_ifbmp(_adapter *adapter);
 u8 rtw_mi_get_ap_mesh_ifbmp(_adapter *adapter);
 void rtw_mi_update_ap_bmc_camid(_adapter *padapter, u8 camid_a, u8 camid_b);
+_adapter *rtw_mi_get_ap_mesh_iface_by_hwband(struct dvobj_priv *dvobj, u8 band_idx);
 
 #endif /*__RTW_MI_H_*/

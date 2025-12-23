@@ -22,6 +22,10 @@ MODULE_DESCRIPTION("Realtek Wireless Lan Driver");
 MODULE_AUTHOR("Realtek Semiconductor Corp.");
 MODULE_VERSION(DRIVERVERSION);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#define strlcpy(p, q, s) strscpy(p, q, s)
+#endif
+
 /* module param defaults */
 int rtw_chip_version = 0x00;
 int rtw_rfintfs = HWPI;
@@ -505,6 +509,12 @@ MODULE_PARM_DESC(ifname, "The default name to allocate for first interface");
 module_param(if2name, charp, 0644);
 MODULE_PARM_DESC(if2name, "The default name to allocate for second interface");
 
+#if defined(CONFIG_PLATFORM_ANDROID) && (CONFIG_IFACE_NUMBER > 2)
+char *if3name = "ap%d";
+module_param(if3name, charp, 0644);
+MODULE_PARM_DESC(if3name, "The default name to allocate for third interface");
+#endif
+
 char *rtw_initmac = 0;  /* temp mac address if users want to use instead of the mac address in Efuse */
 
 #ifdef CONFIG_CONCURRENT_MODE
@@ -695,7 +705,7 @@ module_param(rtw_dfs_region_domain, uint, 0644);
 MODULE_PARM_DESC(rtw_dfs_region_domain, "0:NONE, 1:FCC, 2:MKK, 3:ETSI");
 #endif
 
-uint rtw_amsdu_mode = RTW_AMSDU_MODE;
+uint rtw_amsdu_mode = RTW_AMSDU_MODE_NON_SPP;
 module_param(rtw_amsdu_mode, uint, 0644);
 MODULE_PARM_DESC(rtw_amsdu_mode, "0:non-spp, 1:spp, 2:all drop");
 
@@ -1395,7 +1405,9 @@ uint loadparam(_adapter *padapter)
 
 	snprintf(registry_par->ifname, 16, "%s", ifname);
 	snprintf(registry_par->if2name, 16, "%s", if2name);
-
+#if defined(CONFIG_PLATFORM_ANDROID) && (CONFIG_IFACE_NUMBER > 2)
+	snprintf(registry_par->if3name, 16, "%s", if3name);
+#endif
 	registry_par->notch_filter = (u8)rtw_notch_filter;
 
 #ifdef CONFIG_CONCURRENT_MODE
@@ -1631,7 +1643,7 @@ static int rtw_net_set_mac_address(struct net_device *pnetdev, void *addr)
 	}
 
 	_rtw_memcpy(adapter_mac_addr(padapter), sa->sa_data, ETH_ALEN); /* set mac addr to adapter */
-	_rtw_memcpy(pnetdev->dev_addr, sa->sa_data, ETH_ALEN); /* set mac addr to net_device */
+	dev_addr_mod(pnetdev, 0, sa->sa_data, ETH_ALEN);
 
 #if 0
 	if (rtw_is_hw_init_completed(padapter)) {
@@ -1851,6 +1863,16 @@ void rtw_ndev_uninit(struct net_device *dev)
 	rtw_adapter_proc_deinit(dev);
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+static int rtw_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
+			      void __user *data, int cmd)
+{
+	/* handle cmd(s) between SIOCDEVPRIVATE and SIOCDEVPRIVATE + 15 */
+
+	return rtw_ioctl(dev, ifr, cmd);
+}
+#endif
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29))
 static const struct net_device_ops rtw_netdev_ops = {
 	.ndo_init = rtw_ndev_init,
@@ -1864,6 +1886,9 @@ static const struct net_device_ops rtw_netdev_ops = {
 	.ndo_set_mac_address = rtw_net_set_mac_address,
 	.ndo_get_stats = rtw_net_get_stats,
 	.ndo_do_ioctl = rtw_ioctl,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	.ndo_siocdevprivate = rtw_siocdevprivate,
+#endif
 };
 #endif
 
@@ -2147,7 +2172,11 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
 	u8 rtnl_lock_needed = rtw_rtnl_lock_needed(dvobj);
 
 #ifdef CONFIG_RTW_NAPI
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+	netif_napi_add(ndev, &adapter->napi, rtw_recv_napi_poll);
+#else
 	netif_napi_add(ndev, &adapter->napi, rtw_recv_napi_poll, RTL_NAPI_WEIGHT);
+#endif
 #endif /* CONFIG_RTW_NAPI */
 
 #if defined(CONFIG_IOCTL_CFG80211)
@@ -2167,7 +2196,7 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
 	/* alloc netdev name */
 	rtw_init_netdev_name(ndev, name);
 
-	_rtw_memcpy(ndev->dev_addr, adapter_mac_addr(adapter), ETH_ALEN);
+	dev_addr_mod(ndev, 0, adapter_mac_addr(adapter), ETH_ALEN);
 
 	/* Tell the network stack we exist */
 
@@ -3360,6 +3389,9 @@ static const struct net_device_ops rtw_netdev_vir_if_ops = {
 	.ndo_set_mac_address = rtw_net_set_mac_address,
 	.ndo_get_stats = rtw_net_get_stats,
 	.ndo_do_ioctl = rtw_ioctl,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	.ndo_siocdevprivate = rtw_siocdevprivate,
+#endif
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 35))
 	.ndo_select_queue	= rtw_select_queue,
 #endif
@@ -3743,6 +3775,10 @@ int rtw_os_ndevs_register(struct dvobj_priv *dvobj)
 				name = regsty->ifname;
 			else if (adapter->iface_id == IFACE_ID1)
 				name = regsty->if2name;
+#if defined(CONFIG_PLATFORM_ANDROID) && (CONFIG_IFACE_NUMBER > 2)
+			else if (adapter->iface_id == IFACE_ID2)
+				name = regsty->if3name;
+#endif
 			else
 				name = "wlan%d";
 

@@ -841,6 +841,12 @@ typedef struct hal_com_data {
 	u8 dma_ch_map[32];	/* TXDESC qsel maximum size */
 #endif
 
+#ifndef RTW_HALMAC /* for SIFS initial value */
+	u16 init_reg_0x428;
+	u32 init_reg_0x514;
+	u16 init_reg_0x63a;
+	u32 init_reg_0x63c;
+#endif
 } HAL_DATA_COMMON, *PHAL_DATA_COMMON;
 
 typedef struct hal_com_data HAL_DATA_TYPE, *PHAL_DATA_TYPE;

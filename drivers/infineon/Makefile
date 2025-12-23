@@ -1,1 +1,1 @@
-chips/CYW43455_Makefile
+chips/CYW4373_Makefile

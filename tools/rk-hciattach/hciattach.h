@@ -94,22 +94,18 @@
 #include <syslog.h>
 #define BT_INFO(fmt, arg...) do {  \
                                                             syslog(LOG_INFO, "%s :" fmt "\n" , LOG_TAG, ##arg);\
-                                                            printf("TAG:%s:"fmt"\n", LOG_TAG, ##arg);\
                                                     }while(0)
 
 #define BT_DBG(fmt, arg...) do {  \
                                                             syslog(LOG_DEBUG, "%s :" fmt "\n" , LOG_TAG, ##arg);\
-                                                            printf("TAG:%s:"fmt"\n", LOG_TAG, ##arg);\
                                                     }while(0)
 
 #define BT_WARN(fmt, arg...) do {  \
                                                                 syslog(LOG_WARNING, "%s :" fmt "\n" , LOG_TAG, ##arg);\
-                                                                printf("TAG:%s:"fmt"\n", LOG_TAG, ##arg);\
                                                         }while(0)
 
 #define BT_ERROR(fmt, arg...) do {  \
                                                                 syslog(LOG_ERR, "%s :" fmt "\n" , LOG_TAG, ##arg);\
-                                                                printf("TAG:%s:"fmt"\n", LOG_TAG, ##arg); \
                                                         }while(0)
 #endif
 

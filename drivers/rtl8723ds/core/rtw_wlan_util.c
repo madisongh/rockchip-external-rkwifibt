@@ -3452,7 +3452,6 @@ void update_capinfo(PADAPTER Adapter, u16 updateCap)
 void update_wireless_mode(_adapter *padapter)
 {
 	int ratelen, network_type = 0;
-	u32 SIFS_Timer;
 	struct mlme_ext_priv	*pmlmeext = &padapter->mlmeextpriv;
 	struct mlme_ext_info	*pmlmeinfo = &(pmlmeext->mlmext_info);
 	WLAN_BSSID_EX		*cur_network = &(pmlmeinfo->network);
@@ -3492,22 +3491,8 @@ void update_wireless_mode(_adapter *padapter)
 
 #ifndef RTW_HALMAC
 	/* HALMAC IC do not set HW_VAR_RESP_SIFS here */
-#if 0
-	if ((pmlmeext->cur_wireless_mode == WIRELESS_11G) ||
-	    (pmlmeext->cur_wireless_mode == WIRELESS_11BG)) /* WIRELESS_MODE_G) */
-		SIFS_Timer = 0x0a0a;/* CCK */
-	else
-		SIFS_Timer = 0x0e0e;/* pHalData->SifsTime; //OFDM */
+	rtw_hal_set_hwreg(padapter, HW_VAR_RESP_SIFS, NULL);
 #endif
-
-	SIFS_Timer = 0x0a0a0808; /* 0x0808->for CCK, 0x0a0a->for OFDM
-                              * change this value if having IOT issues. */
-
-	rtw_hal_set_hwreg(padapter, HW_VAR_RESP_SIFS, (u8 *)&SIFS_Timer);
-#endif
-
-	rtw_hal_set_hwreg(padapter, HW_VAR_WIRELESS_MODE, (u8 *)&(pmlmeext->cur_wireless_mode));
-
 	if ((pmlmeext->cur_wireless_mode & WIRELESS_11B)
 		#ifdef CONFIG_P2P
 		&& (rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE)

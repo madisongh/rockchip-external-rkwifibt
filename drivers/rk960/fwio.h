@@ -11,17 +11,16 @@
 #define _RK960_FIRMWARE_H_
 
 //#define ENABLE_LOADER_BEFORE_FIRMWARE
-//#define FW_LOADER_FROM_FOPEN
-
+#ifdef SUPPORT_RK962_POWERSAVE
+#define FW_LOADER_FROM_FOPEN
+#endif
+#define FW_LOADER_FROM_FOPEN
 //#define FW_MEMORY_CHECK
 #define FW_DOWNLOAD_CHECK
 
-#define MAX_FW_BUF_SIZE_SMALL (16*1024)
-#define MAX_FW_BUF_SIZE_BIG   (126*1024)
-#define MAX_FW_DATA_SIZE      (256*1024)
-#define MAX_FW_RFCAL_DATA_SIZE  (64*1024)
-#define MAX_LOADER_DATA_SIZE  MAX_FW_BUF_SIZE_SMALL
+#define MAX_FW_BUF_SIZE       (16*1024)
 #define MAX_SDD_BUF_SIZE      (4*1024)
+#define MAX_BUF_SIZE          (1*1024)
 
 #define SDIO_HOST_READ_REG_FW_STATE			64
 
@@ -32,9 +31,11 @@
 #define SDIO_CMD_ADDR_VER_D			(255*1024/512)
 #define SDIO_CMD_ADDR_VER_ROM		(95*1024/512)
 #define SDIO_ROM_VER_ADDR           (0x40000/512)
+#define SDIO_CHIP_NAME_ADDR         (0x17e00/512)
 
 #define SDIO_HOST_PATCH_ADDR	0
 #define SDIO_START_CMD_ID		0x5A5A5A5A
+#define BOOTUP_CRC_CMD			0x5A5A5A5B
 #define SDIO_HOST_TO_LOADER_CMD	0x5A5A5A5D
 
 /* hwio addr info */
@@ -58,18 +59,13 @@ struct firmware_info {
 	int fw_saved;
 	unsigned char *fw_data;
 	int fw_size;
-	unsigned char *fw_rfcal_data;
-	int fw_rfcal_size;
 	unsigned char *buf_data;
 	int buf_size;
 	int useful_code_size;
-	unsigned char *loder_data;
-	int loder_size;
+
 	unsigned char *sdd_data;
 	int sdd_size;
-#ifdef FW_DOWNLOAD_CHECK
-	unsigned char *fw_data_check;
-#endif
+
 	unsigned char *fw_start_data;
 	const struct firmware *fw_data_r;
 	const struct firmware *fw_rfcal_data_r;
@@ -77,13 +73,20 @@ struct firmware_info {
         const struct firmware *sdd_data_r;
 };
 
+enum rk960_download_fw_name_e {
+	WIFI_FW_LOADER = BIT(1),
+	WIFI_FW_SDD    = BIT(2),
+	WIFI_FW_RF     = BIT(3),
+	WIFI_FW        = BIT(4),
+};
+
 /* SDD definitions */
 #define SDD_PTA_CFG_ELT_ID 0xEB
 #define SDD_REFERENCE_FREQUENCY_ELT_ID 0xc5
 
-int rk960_load_firmware(struct rk960_common *priv);
+int rk960_load_firmware(struct rk960_common *priv, int start_fw);
 int rk960_start_fw(struct rk960_common *priv);
-int rk960_download_fw(struct rk960_common *priv, int start_fw);
+int rk960_download_fw(struct rk960_common *priv, int start_fw, enum rk960_download_fw_name_e name);
 int rk960_alloc_firmware_buf(struct firmware_info *fw_info);
 void rk960_free_firmware_buf(struct firmware_info *fw_info);
 

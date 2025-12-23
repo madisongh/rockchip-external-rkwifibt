@@ -109,6 +109,8 @@ enum bt_info_src_8723d_2ant {
 	BT_INFO_SRC_8723D_2ANT_WIFI_FW		= 0x0,
 	BT_INFO_SRC_8723D_2ANT_BT_RSP		= 0x1,
 	BT_INFO_SRC_8723D_2ANT_BT_ACTIVE_SEND	= 0x2,
+	BT_INFO_SRC_8723D_2ANT_BT_SLOT1			= 0x7,
+	BT_INFO_SRC_8723D_2ANT_BT_SLOT2			= 0x8,
 	BT_INFO_SRC_8723D_2ANT_MAX
 };
 
@@ -179,6 +181,8 @@ struct coex_dm_8723d_2ant {
 	boolean		cur_ps_tdma_on;
 	boolean		pre_bt_auto_report;
 	boolean		cur_bt_auto_report;
+	u32		bt_slot_length1[10];
+	u32		bt_slot_length2[10];
 
 	/* sw mechanism */
 	boolean		pre_rf_rx_lpf_shrink;
@@ -232,6 +236,7 @@ struct coex_sta_8723d_2ant {
 	boolean		pan_exist;
 
 	boolean		under_lps;
+	boolean		wl_in_lps_enter;
 	boolean		under_ips;
 	u8		connect_ap_period_cnt;
 	u8		pnp_awake_period_cnt;
@@ -324,6 +329,8 @@ struct coex_sta_8723d_2ant {
 
 	u16		bt_reg_vendor_ac;
 	u16		bt_reg_vendor_ae;
+	u16		bt_reg_le_2e;
+	u16		bt_reg_le_52;
 
 	boolean		is_setup_link;
 	boolean		wl_noisy_level;

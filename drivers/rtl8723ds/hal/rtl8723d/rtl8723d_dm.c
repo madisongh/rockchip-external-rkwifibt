@@ -222,6 +222,7 @@ rtl8723d_HalDmWatchDog(
 	PHAL_DATA_TYPE	pHalData = GET_HAL_DATA(Adapter);
 	struct pwrctrl_priv *pwrpriv = adapter_to_pwrctl(Adapter);
 	u8 in_lps = _FALSE;
+	u32 hiq_pkt_num;
 
 #ifdef CONFIG_MP_INCLUDED
 	/* #if MP_DRIVER */
@@ -264,6 +265,14 @@ rtl8723d_HalDmWatchDog(
 #endif
 	}
 
+	hiq_pkt_num = (rtw_read16(Adapter, 0x414) >> 8) & 0x7f;
+	if (hiq_pkt_num > 0x20) {
+		rtw_write8(Adapter, 0x5A7, 0xff);
+		RTW_INFO("[%s] hiq_pkt_num = %x , set hiq no limit = 1, tx hi_queue immediately\n", __func__, hiq_pkt_num);
+	} else {
+		rtw_write8(Adapter, 0x5A7, 0x0);
+//		RTW_INFO("[%s] hiq_pkt_num = %x , set hiq no limit = 0\n", __func__, hiq_pkt_num);
+	}
 #ifdef CONFIG_DISABLE_ODM
 	goto skip_dm;
 #endif

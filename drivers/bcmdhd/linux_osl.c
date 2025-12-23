@@ -541,7 +541,11 @@ osl_malloc(osl_t *osh, uint size)
 original:
 #endif /* CONFIG_DHD_USE_STATIC_BUF */
 
-	flags = CAN_SLEEP() ? GFP_KERNEL: GFP_ATOMIC;
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		flags = GFP_ATOMIC;
+	else
+		flags = (CAN_SLEEP()) ? GFP_KERNEL: GFP_ATOMIC;
+
 	if ((addr = kmalloc(size, flags)) == NULL) {
 		if (osh)
 			osh->failed++;
@@ -1419,11 +1423,17 @@ BCMFASTPATH(osl_cpu_relax)(void)
 
 extern void osl_preempt_disable(osl_t *osh)
 {
+if (IS_ENABLED(CONFIG_PREEMPT_RT))
+	migrate_disable();
+else
 	preempt_disable();
 }
 
 extern void osl_preempt_enable(osl_t *osh)
 {
+if (IS_ENABLED(CONFIG_PREEMPT_RT))
+	migrate_enable();
+else
 	preempt_enable();
 }
 

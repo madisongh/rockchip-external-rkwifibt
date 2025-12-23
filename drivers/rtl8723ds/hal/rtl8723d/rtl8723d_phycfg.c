@@ -425,6 +425,26 @@ s32 PHY_MACConfig8723D(PADAPTER Adapter)
 		rtStatus = _SUCCESS;
 #endif/* CONFIG_EMBEDDED_FWIMG */
 	}
+#ifdef RTW_SIFS_INIT_BY_CORE
+	/* Set Spec SIFS (used in NAV) */
+	rtw_write16(Adapter, REG_SPEC_SIFS, 0x100a);
+	rtw_write16(Adapter, REG_MAC_SPEC_SIFS, 0x100a);
+
+	/* Set SIFS for CCK */
+	rtw_write16(Adapter, REG_SIFS_CTX, 0x100a);
+
+	/* Set SIFS for OFDM */
+	rtw_write16(Adapter, REG_SIFS_TRX, 0x100a);
+
+	/* RESP_SIFS for CCK */
+	rtw_write8(Adapter, REG_RESP_SIFS_CCK, 0x08); /* SIFS_T2T_CCK (0x08) */
+	rtw_write8(Adapter, REG_RESP_SIFS_CCK + 1, 0x08); /*SIFS_R2T_CCK(0x08) */
+	/* RESP_SIFS for OFDM */
+	rtw_write8(Adapter, REG_RESP_SIFS_OFDM, 0x0a); /* SIFS_T2T_OFDM (0x0a) */
+	rtw_write8(Adapter, REG_RESP_SIFS_OFDM + 1, 0x0a); /* SIFS_R2T_OFDM(0x0a) */
+#endif
+
+	rtw_hal_init_sifs_backup(Adapter);
 
 	return rtStatus;
 }

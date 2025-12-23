@@ -1663,6 +1663,21 @@ s16 mb_of_ntx(u8 ntx)
 	return _mb_of_ntx[ntx - 1];
 }
 
+/*
+* input with txpwr value in unit of mBm
+* return txpwr in unit of TX Gain Index
+*/
+s8 txpwr_mbm_to_txgi_s8_with_max(s16 mbm, u8 txgi_max, u8 txgi_pdbm)
+{
+	s16 max_mbm = (txgi_max > S8_MAX ? S8_MAX : txgi_max) * MBM_PDBM / txgi_pdbm;
+	s16 min_mbm = S8_MIN * MBM_PDBM  / txgi_pdbm;
+
+	mbm = rtw_min(max_mbm, mbm);
+	mbm = rtw_max(min_mbm, mbm);
+
+	return mbm * txgi_pdbm / MBM_PDBM;
+}
+
 #if CONFIG_TXPWR_LIMIT
 void _dump_regd_exc_list(void *sel, struct rf_ctl_t *rfctl)
 {
