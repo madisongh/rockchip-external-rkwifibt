@@ -35,6 +35,7 @@
 
 typedef struct _ADAPTER _adapter;
 struct _ADAPTER_LINK;
+struct sta_info;
 /* connection interface of drv and hal */
 
 #include <rtw_debug.h>
