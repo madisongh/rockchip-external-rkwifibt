@@ -18,6 +18,7 @@ EXTRA_CFLAGS += -Wno-unused
 EXTRA_CFLAGS += -Wno-discarded-qualifiers
 
 EXTRA_CFLAGS += -Wno-implicit-fallthrough
+EXTRA_CFLAGS += -Wno-error=address
 
 ############ ANDROID COMMON KERNEL ############
 # clang
